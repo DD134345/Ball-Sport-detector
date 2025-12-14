@@ -90,7 +90,7 @@ model.add(Dropout(0.5))
 model.add(Dense(256, activation='relu'))
 model.add(Dropout(0.5))
 model.add(Dense(
-    units=9,
+    units=6,
     activation='softmax'
 ))
 #Compile the Model

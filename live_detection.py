@@ -9,17 +9,14 @@ import os
 import threading
 from pathlib import Path
 
-# Ball sport classes (must match training_model.py output layer: units=9)
+# Ball sport classes (must match training_model.py output layer: units=6)
 BALL_CLASSES = [
+    'Bowling',
     'Basketball',
+    'Billiard Ball',
     'Football',
-    'Soccer Ball',
     'Tennis Ball',
-    'Baseball',
-    'Volleyball',
-    'Golf Ball',
-    'Bowling Ball',
-    'Badminton Shuttlecock'
+    'Volleyball'
 ]
 
 # Model and preprocessing settings (must match training_model.py)
@@ -77,7 +74,8 @@ class BallDetectorApp:
                 messagebox.showwarning("Model Validation", f"Could not fully validate model: {str(e)}")
             
             print(f"✓ Model loaded successfully from {MODEL_PATH}")
-            print(f"✓ Model expects input shape: {self.model.input_shape}")
+            if self.model is not None:
+                print(f"✓ Model expects input shape: {self.model.input_shape}")
             print(f"✓ Model outputs {num_classes} classes")
             
         except Exception as e:
@@ -200,7 +198,8 @@ class BallDetectorApp:
             photo = ImageTk.PhotoImage(img)
             
             self.image_label.config(image=photo)
-            self.image_label.image = photo
+            self.image_label.config(image=photo)
+            self.photo_reference = photo  # Store a reference to prevent garbage collection
             
         except Exception as e:
             messagebox.showerror("Image Error", f"Failed to load image: {str(e)}")
@@ -221,6 +220,8 @@ class BallDetectorApp:
                 raise ValueError("Image preprocessing resulted in NaN values")
             
             # Make prediction with low verbosity
+            if self.model is None:
+                raise ValueError("Model is not loaded. Please ensure the model file exists and is loaded correctly.")
             predictions = self.model.predict(img_array, verbose=0)
             
             # Validate predictions
@@ -283,7 +284,6 @@ class BallDetectorApp:
     def clear_results(self):
         """Clear all results and image"""
         self.image_label.config(image='')
-        self.image_label.image = None
         self.results_text.config(state=tk.NORMAL)
         self.results_text.delete(1.0, tk.END)
         self.results_text.config(state=tk.DISABLED)

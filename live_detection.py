@@ -11,17 +11,17 @@ from pathlib import Path
 
 # Ball sport classes (must match training_model.py output layer: units=6)
 BALL_CLASSES = [
-    'Bowling',
-    'Basketball',
-    'Billiard Ball',
-    'Football',
-    'Tennis Ball',
-    'Volleyball'
+    'basketball',
+    'billiard_ball',
+    'bowling_ball',
+    'football',
+    'tennis_ball',
+    'volleyball'
 ]
 
 # Model and preprocessing settings (must match training_model.py)
-IMAGE_SIZE = (224, 224)  # Must match training size
-MODEL_PATH = 'best_ball_classifier.h5'
+IMAGE_SIZE = (192, 192)  # Must match training size
+MODEL_PATH = 'Ball_sport_classifier.h5'
 CONFIDENCE_THRESHOLD = 0.1  # Minimum confidence to display prediction
 
 

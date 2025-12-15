@@ -5,9 +5,10 @@ import numpy as np
 import cv2
 import os
 from datetime import datetime
-from collections import deque
+import matplotlib.pyplot as plt
+from pathlib import Path
 
-# Ball sport classes (must match training_model.py)
+# ============ CONFIGURATION ============
 BALL_CLASSES = [
     'basketball',
     'billiard_ball',
@@ -17,10 +18,9 @@ BALL_CLASSES = [
     'volleyball'
 ]
 
-# Model and preprocessing settings (must match training_model.py)
-IMAGE_SIZE = (192, 192)  # Must match training size
+IMAGE_SIZE = (224, 224)  # Must match training size
 MODEL_PATH = 'Ball_sport_classifier.h5'
-CONFIDENCE_THRESHOLD = 0.5  # Minimum confidence to display prediction
+CONFIDENCE_THRESHOLD = 0.3  # Lower threshold for more detections
 
 # Colors for display (BGR format for OpenCV)
 CLASS_COLORS = {
@@ -32,19 +32,12 @@ CLASS_COLORS = {
     'volleyball': (255, 255, 0)       # Cyan
 }
 
-class CameraBallDetector:
-    def __init__(self, camera_id=0):
-        """Initialize camera detector with model"""
-        self.camera_id = camera_id
+class BallImageDetector:
+    def __init__(self):
+        """Initialize image detector with model"""
         self.model = None
-        self.cap = None
-        self.fps = 0
-        self.frame_count = 0
-        self.predictions_history = deque(maxlen=5)  # Keep last 5 predictions for smoothing
-        
         print("🔄 Initializing Ball Detector...")
         self.load_model()
-        self.initialize_camera()
     
     def load_model(self):
         """Load the trained model with error handling"""
@@ -70,51 +63,49 @@ class CameraBallDetector:
             
             print(f"✓ Model loaded successfully from {MODEL_PATH}")
             print(f"✓ Model expects input shape: {self.model.input_shape}")
-            print(f"✓ Model outputs {num_classes} classes")
+            print(f"✓ Model outputs {num_classes} classes\n")
             
         except Exception as e:
             print(f"✗ Failed to load model: {str(e)}")
             raise
     
-    def initialize_camera(self):
-        """Initialize webcam connection"""
+    def preprocess_image(self, img_path):
+        """Load and preprocess image for model prediction"""
         try:
-            self.cap = cv2.VideoCapture(self.camera_id)
+            # Load image with target size matching training
+            img = image.load_img(img_path, target_size=IMAGE_SIZE)
             
-            if not self.cap.isOpened():
-                raise RuntimeError(f"Failed to open camera {self.camera_id}")
-            
-            # Set camera properties for better performance
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-            self.cap.set(cv2.CAP_PROP_FPS, 30)
-            
-            print(f"✓ Camera {self.camera_id} initialized successfully")
-            print(f"✓ Resolution: {int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))}x{int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))}")
-            
-        except Exception as e:
-            print(f"✗ Failed to initialize camera: {str(e)}")
-            raise
-    
-    def predict_frame(self, frame):
-        """Predict ball type from a frame"""
-        try:
-            # Preprocess frame for model
-            # Resize to match training size
-            resized_frame = cv2.resize(frame, IMAGE_SIZE)
-            
-            # Convert BGR to RGB
-            rgb_frame = cv2.cvtColor(resized_frame, cv2.COLOR_BGR2RGB)
-            
-            # Normalize
-            img_array = np.array(rgb_frame, dtype=np.float32) / 255.0
+            # Convert to array
+            img_array = image.img_to_array(img)
             
             # Add batch dimension
             img_array = np.expand_dims(img_array, axis=0)
             
+            # Normalize to [0, 1] - matching training preprocessing
+            img_array = img_array / 255.0
+            
+            # Validate preprocessing
+            if np.isnan(img_array).any():
+                raise ValueError("Image preprocessing resulted in NaN values")
+            
+            return img_array, img
+            
+        except Exception as e:
+            print(f"✗ Image preprocessing error: {str(e)}")
+            return None, None
+    
+    def predict_image(self, img_path, top_k=6):
+        """Predict ball type from image with detailed confidence scores"""
+        try:
+            img_array, original_img = self.preprocess_image(img_path)
+            
+            if img_array is None:
+                raise ValueError("Failed to preprocess image")
+            
             # Make prediction
             if self.model is None:
-                raise RuntimeError("Model is not loaded. Ensure 'load_model' is called successfully.")
+                raise ValueError("Model is not loaded.")
+            
             predictions = self.model.predict(img_array, verbose=0)
             prediction_scores = predictions[0]
             
@@ -122,195 +113,200 @@ class CameraBallDetector:
             predicted_class = np.argmax(prediction_scores)
             confidence = prediction_scores[predicted_class]
             
-            # Store in history for smoothing
-            self.predictions_history.append({
-                'class': predicted_class,
-                'confidence': confidence,
-                'all_scores': prediction_scores
-            })
+            # Validate predictions
+            if np.isnan(confidence):
+                raise ValueError("Model prediction resulted in NaN values")
             
-            return predicted_class, confidence, prediction_scores
+            return {
+                'class': predicted_class,
+                'class_name': BALL_CLASSES[predicted_class],
+                'confidence': confidence,
+                'all_scores': prediction_scores,
+                'original_image': original_img
+            }
             
         except Exception as e:
             print(f"✗ Prediction error: {str(e)}")
-            return None, 0, None
+            return None
     
-    def get_smoothed_prediction(self):
-        """Get smoothed prediction from history (reduces flickering)"""
-        if not self.predictions_history:
-            return None, 0
+    def display_results(self, result, img_path):
+        """Display prediction results with visualization"""
+        if result is None:
+            print("✗ Could not process image")
+            return
         
-        # Use most common prediction from recent frames
-        classes = [p['class'] for p in self.predictions_history]
-        confidences = [p['confidence'] for p in self.predictions_history]
+        predicted_class = result['class']
+        confidence = result['confidence']
+        all_scores = result['all_scores']
+        original_img = result['original_image']
         
-        # Get mode (most common class)
-        most_common_class = max(set(classes), key=classes.count)
-        avg_confidence = np.mean([c for cls, c in zip(classes, confidences) if cls == most_common_class])
+        # Print detailed results
+        print("\n" + "="*70)
+        print(f"📊 PREDICTION RESULTS FOR: {os.path.basename(img_path)}")
+        print("="*70)
         
-        return most_common_class, avg_confidence
+        # Top prediction
+        print(f"\n🎯 TOP PREDICTION:")
+        print(f"   Ball Type: {BALL_CLASSES[predicted_class].upper()}")
+        print(f"   Confidence: {confidence*100:.2f}%")
+        
+        # All predictions sorted by confidence
+        print(f"\n📋 ALL PREDICTIONS (sorted by confidence):")
+        print("-" * 70)
+        print(f"{'Rank':<6} {'Ball Type':<20} {'Confidence':<15} {'Progress Bar':<25}")
+        print("-" * 70)
+        
+        sorted_indices = np.argsort(all_scores)[::-1]
+        
+        for rank, idx in enumerate(sorted_indices, 1):
+            ball_type = BALL_CLASSES[idx]
+            confidence_pct = all_scores[idx] * 100
+            bar_length = int(confidence_pct / 5)
+            bar = "█" * bar_length + "░" * (20 - bar_length)
+            
+            prefix = "→" if idx == predicted_class else " "
+            print(f"{prefix}{rank:<5} {ball_type:<20} {confidence_pct:>6.2f}%{'':<8} [{bar}]")
+        
+        print("-" * 70)
+        print(f"\n{'='*70}")
+        
+        # Visualize with matplotlib
+        self.visualize_prediction(original_img, result, img_path)
     
-    def draw_predictions(self, frame, predicted_class, confidence, all_scores):
-        """Draw predictions on frame"""
-        height, width = frame.shape[:2]
+    def visualize_prediction(self, img, result, img_path):
+        """Create detailed visualization of prediction"""
+        predicted_class = result['class']
+        confidence = result['confidence']
+        all_scores = result['all_scores']
+        class_name = result['class_name']
         
-        # Display title
-        cv2.putText(frame, "Ball Sport Detector - Real-time Detection", 
-                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        fig = plt.figure(figsize=(16, 6))
         
-        # Display FPS
-        cv2.putText(frame, f"FPS: {self.fps:.1f}", 
-                    (width - 150, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+        # Display image
+        ax1 = plt.subplot(1, 2, 1)
+        img_resized = np.array(img)
+        ax1.imshow(img_resized)
+        ax1.set_title(f'Detected Ball: {class_name.upper()}\nConfidence: {confidence*100:.2f}%', 
+                      fontsize=14, fontweight='bold', color='green')
+        ax1.axis('off')
         
-        if predicted_class is not None and confidence >= CONFIDENCE_THRESHOLD:
-            ball_name = BALL_CLASSES[predicted_class]
-            color = CLASS_COLORS.get(ball_name, (0, 255, 0))
-            
-            # Draw main prediction box
-            cv2.rectangle(frame, (10, 60), (width - 10, 150), color, 2)
-            cv2.putText(frame, "DETECTED BALL:", 
-                        (20, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
-            cv2.putText(frame, f"{ball_name.upper()}", 
-                        (20, 130), cv2.FONT_HERSHEY_SIMPLEX, 1.2, color, 3)
-            
-            # Draw confidence score with bar
-            confidence_pct = confidence * 100
-            bar_width = int((confidence_pct / 100) * 300)
-            cv2.rectangle(frame, (10, 160), (310, 185), (200, 200, 200), 1)
-            cv2.rectangle(frame, (10, 160), (10 + bar_width, 185), color, -1)
-            cv2.putText(frame, f"Confidence: {confidence_pct:.1f}%", 
-                        (20, 205), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
-            
-            # Draw all predictions
-            y_offset = 240
-            cv2.putText(frame, "All Predictions:", 
-                        (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
-            
-            sorted_indices = np.argsort(all_scores)[::-1]
-            
-            for rank, idx in enumerate(sorted_indices[:3], 1):  # Show top 3
-                ball_type = BALL_CLASSES[idx]
-                score = all_scores[idx] * 100
-                
-                y_offset += 25
-                prefix = "→ " if idx == predicted_class else "  "
-                cv2.putText(frame, f"{prefix}{rank}. {ball_type}: {score:.1f}%", 
-                            (20, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-        else:
-            # No confident prediction
-            cv2.putText(frame, "No ball detected or confidence too low", 
-                        (10, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        # Display confidence scores as bar chart
+        ax2 = plt.subplot(1, 2, 2)
+        sorted_indices = np.argsort(all_scores)[::-1]
+        sorted_classes = [BALL_CLASSES[i] for i in sorted_indices]
+        sorted_scores = [all_scores[i] * 100 for i in sorted_indices]
         
-        # Draw instructions
-        cv2.putText(frame, "Press 'Q' to quit | 'S' to save screenshot | 'C' to capture stats", 
-                    (10, height - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+        colors = ['green' if i == predicted_class else 'skyblue' for i in sorted_indices]
+        bars = ax2.barh(sorted_classes, sorted_scores, color=colors, edgecolor='black', linewidth=1.5)
         
-        return frame
+        # Add percentage labels on bars
+        for i, (bar, score) in enumerate(zip(bars, sorted_scores)):
+            ax2.text(score + 1, i, f'{score:.2f}%', va='center', fontweight='bold')
+        
+        ax2.set_xlabel('Confidence (%)', fontsize=12, fontweight='bold')
+        ax2.set_title('Prediction Confidence Scores', fontsize=14, fontweight='bold')
+        ax2.set_xlim(0, 105)
+        ax2.grid(axis='x', alpha=0.3)
+        
+        plt.tight_layout()
+        
+        # Save visualization
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        save_name = f"prediction_{timestamp}.png"
+        plt.savefig(save_name, dpi=150, bbox_inches='tight')
+        print(f"\n✓ Visualization saved as: {save_name}")
+        
+        plt.show()
     
-    def run(self):
-        """Run real-time detection loop"""
-        print("\n" + "="*60)
-        print("🎥 REAL-TIME BALL DETECTION STARTED")
-        print("="*60)
-        print("\nControls:")
-        print("  'Q' - Quit application")
-        print("  'S' - Save screenshot")
-        print("  'C' - Capture prediction statistics")
-        print("\nPress any key to continue...")
-        print("="*60 + "\n")
+    def batch_predict(self, image_dir):
+        """Predict on all images in a directory"""
+        print(f"\n🔄 Processing all images in: {image_dir}")
+        print("="*70)
         
-        import time
-        prev_time = time.time()
-        frame_count = 0
+        image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.gif'}
+        image_files = [f for f in os.listdir(image_dir) 
+                      if Path(f).suffix.lower() in image_extensions]
         
-        while True:
-            try:
-                if self.cap is None or not self.cap.isOpened():
-                    print("✗ Camera is not initialized or failed to open")
-                    break
-                ret, frame = self.cap.read()
-                
-                if not ret:
-                    print("✗ Failed to read frame from camera")
-                    break
-                
-                # Calculate FPS
-                current_time = time.time()
-                frame_count += 1
-                if current_time - prev_time >= 1.0:
-                    self.fps = frame_count / (current_time - prev_time)
-                    frame_count = 0
-                    prev_time = current_time
-                
-                # Make prediction
-                predicted_class, confidence, all_scores = self.predict_frame(frame)
-                
-                # Draw results
-                frame = self.draw_predictions(frame, predicted_class, confidence, all_scores)
-                
-                # Display frame
-                cv2.imshow('Ball Sport Detector', frame)
-                
-                # Handle keyboard input
-                key = cv2.waitKey(1) & 0xFF
-                
-                if key == ord('q') or key == ord('Q'):
-                    print("\n✓ Closing application...")
-                    break
-                elif key == ord('s') or key == ord('S'):
-                    # Save screenshot
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    filename = f"ball_detection_{timestamp}.jpg"
-                    cv2.imwrite(filename, frame)
-                    print(f"✓ Screenshot saved: {filename}")
-                elif key == ord('c') or key == ord('C'):
-                    # Print statistics
-                    if predicted_class is not None:
-                        print(f"\n📊 Current Detection Statistics:")
-                        print(f"  Detected Ball: {BALL_CLASSES[predicted_class]}")
-                        print(f"  Confidence: {confidence*100:.2f}%")
-                        print(f"  FPS: {self.fps:.1f}")
+        if not image_files:
+            print(f"✗ No images found in {image_dir}")
+            return
+        
+        results = []
+        
+        for idx, filename in enumerate(image_files, 1):
+            img_path = os.path.join(image_dir, filename)
+            print(f"\n[{idx}/{len(image_files)}] Processing: {filename}")
             
-            except KeyboardInterrupt:
-                print("\n\n✓ Detection interrupted by user")
-                break
-            except Exception as e:
-                print(f"✗ Error during detection: {str(e)}")
-                break
+            result = self.predict_image(img_path)
+            if result:
+                results.append({
+                    'filename': filename,
+                    'class': result['class_name'],
+                    'confidence': result['confidence'] * 100
+                })
+                print(f"  ✓ Detected: {result['class_name']} ({result['confidence']*100:.2f}%)")
+            else:
+                print(f"  ✗ Failed to process")
         
-        self.cleanup()
-    
-    def cleanup(self):
-        """Cleanup resources"""
-        try:
-            if self.cap:
-                self.cap.release()
-            cv2.destroyAllWindows()
-            print("✓ Resources cleaned up successfully")
-        except Exception as e:
-            print(f"✗ Error during cleanup: {str(e)}")
+        # Summary
+        print("\n" + "="*70)
+        print("📊 BATCH PROCESSING SUMMARY")
+        print("="*70)
+        
+        for result in results:
+            print(f"{result['filename']:<30} → {result['class']:<20} ({result['confidence']:.2f}%)")
+        
+        print("="*70)
 
 
 def main():
     """Main entry point"""
+    print("\n" + "="*70)
+    print("🏀 BALL SPORT DETECTOR - IMAGE TESTING 🏀")
+    print("="*70 + "\n")
+    
     try:
-        print("\n🏀 Ball Sport Detector - Real-time Camera Feed 🏀\n")
+        detector = BallImageDetector()
         
-        # Try to use camera 0 (default webcam)
-        detector = CameraBallDetector(camera_id=0)
-        detector.run()
-        
+        while True:
+            print("\nOptions:")
+            print("  1. Test a single image")
+            print("  2. Test all images in a directory")
+            print("  3. Exit")
+            
+            choice = input("\nEnter your choice (1-3): ").strip()
+            
+            if choice == '1':
+                img_path = input("Enter image path: ").strip().strip('"\'')
+                
+                if not os.path.exists(img_path):
+                    print(f"✗ File not found: {img_path}")
+                    continue
+                
+                result = detector.predict_image(img_path)
+                detector.display_results(result, img_path)
+                
+            elif choice == '2':
+                dir_path = input("Enter directory path: ").strip().strip('"\'')
+                
+                if not os.path.isdir(dir_path):
+                    print(f"✗ Directory not found: {dir_path}")
+                    continue
+                
+                detector.batch_predict(dir_path)
+                
+            elif choice == '3':
+                print("\n✓ Exiting...")
+                break
+            
+            else:
+                print("✗ Invalid choice. Please enter 1, 2, or 3.")
+    
     except FileNotFoundError as e:
         print(f"\n✗ Error: {str(e)}")
         print(f"\nPlease make sure:")
-        print(f"  1. The model file '{MODEL_PATH}' is in the same directory as this script")
+        print(f"  1. The model file '{MODEL_PATH}' exists in the current directory")
         print(f"  2. You have trained the model using training_model.py")
-    except RuntimeError as e:
-        print(f"\n✗ Camera Error: {str(e)}")
-        print(f"\nPlease make sure:")
-        print(f"  1. Your webcam is connected and working")
-        print(f"  2. No other application is using the camera")
-        print(f"  3. Camera drivers are properly installed")
     except Exception as e:
         print(f"\n✗ Unexpected error: {str(e)}")
 

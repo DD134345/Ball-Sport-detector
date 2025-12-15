@@ -9,7 +9,7 @@ import os
 import threading
 from pathlib import Path
 
-# Ball sport classes (must match training_model.py output layer: units=6)
+# ============ CONFIGURATION ============
 BALL_CLASSES = [
     'basketball',
     'billiard_ball',
@@ -19,18 +19,18 @@ BALL_CLASSES = [
     'volleyball'
 ]
 
-# Model and preprocessing settings (must match training_model.py)
-IMAGE_SIZE = (192, 192)  # Must match training size
+IMAGE_SIZE = (224, 224)  # Must match training size
 MODEL_PATH = 'Ball_sport_classifier.h5'
-CONFIDENCE_THRESHOLD = 0.1  # Minimum confidence to display prediction
+CONFIDENCE_THRESHOLD = 0.2  # Minimum confidence to display prediction
 
 
 class BallDetectorApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Ball Sport Detector")
-        self.root.geometry("800x900")
+        self.root.title("🏀 Ball Sport Detector")
+        self.root.geometry("900x1000")
         self.root.resizable(True, True)
+        self.root.config(bg='#f0f0f0')
         
         # Load model
         self.model = None
@@ -46,8 +46,9 @@ class BallDetectorApp:
             if not os.path.exists(MODEL_PATH):
                 error_msg = (
                     f"Model file not found: {MODEL_PATH}\n\n"
-                    f"Please ensure 'best_ball_classifier.h5' exists in: {os.path.abspath(MODEL_PATH)}\n\n"
-                    f"Current directory: {os.getcwd()}"
+                    f"Please ensure 'Ball_sport_classifier.h5' exists in: {os.path.abspath(MODEL_PATH)}\n\n"
+                    f"Current directory: {os.getcwd()}\n\n"
+                    f"Make sure you have trained the model using training_model.py"
                 )
                 messagebox.showerror("Model Loading Error", error_msg)
                 self.model = None
@@ -76,7 +77,7 @@ class BallDetectorApp:
             print(f"✓ Model loaded successfully from {MODEL_PATH}")
             if self.model is not None:
                 print(f"✓ Model expects input shape: {self.model.input_shape}")
-            print(f"✓ Model outputs {num_classes} classes")
+                print(f"✓ Model outputs {num_classes} classes")
             
         except Exception as e:
             messagebox.showerror("Model Loading Error", f"Failed to load model:\n{str(e)}\n\nPlease check the model file and try again.")
@@ -85,15 +86,22 @@ class BallDetectorApp:
     def create_widgets(self):
         """Create UI elements"""
         # Title
-        title_label = tk.Label(self.root, text="🏀 Ball Sport Detector 🏀", font=("Arial", 24, "bold"))
+        title_label = tk.Label(
+            self.root, 
+            text="🏀 Ball Sport Detector 🏀", 
+            font=("Arial", 26, "bold"),
+            bg='#f0f0f0',
+            fg='#2196F3'
+        )
         title_label.pack(pady=20)
         
         # Model status
         self.status_label = tk.Label(
             self.root, 
             text="✓ Model Ready" if self.model else "✗ Model Not Loaded",
-            font=("Arial", 11),
-            fg="green" if self.model else "red"
+            font=("Arial", 12, "bold"),
+            fg="green" if self.model else "red",
+            bg='#f0f0f0'
         )
         self.status_label.pack(pady=5)
         
@@ -102,45 +110,96 @@ class BallDetectorApp:
             self.root, 
             text="📁 Upload Ball Image", 
             command=self.upload_image, 
-            font=("Arial", 12), 
+            font=("Arial", 13, "bold"), 
             bg="#4CAF50", 
             fg="white", 
-            padx=20, 
-            pady=10
+            padx=25, 
+            pady=12,
+            cursor="hand2",
+            relief=tk.RAISED,
+            bd=2
         )
-        upload_btn.pack(pady=10)
+        upload_btn.pack(pady=15)
         
-        # Image display
-        self.image_label = tk.Label(self.root, bg="gray", width=60, height=20)
-        self.image_label.pack(pady=20, padx=20)
+        # Image display with frame
+        image_frame = tk.Frame(self.root, bg="white", relief=tk.SUNKEN, bd=2)
+        image_frame.pack(pady=15, padx=20, fill=tk.BOTH, expand=True)
+        
+        self.image_label = tk.Label(image_frame, bg="lightgray", width=60, height=18)
+        self.image_label.pack(padx=5, pady=5, fill=tk.BOTH, expand=True)
         
         # Results frame
-        results_frame = tk.Frame(self.root, bg="#f0f0f0", padx=20, pady=20)
+        results_frame = tk.LabelFrame(
+            self.root, 
+            text="Detection Results", 
+            font=("Arial", 12, "bold"),
+            bg="#f0f0f0",
+            padx=15, 
+            pady=15,
+            fg='#2196F3'
+        )
         results_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
         
-        results_label = tk.Label(results_frame, text="Detection Results:", font=("Arial", 14, "bold"), bg="#f0f0f0")
-        results_label.pack(anchor="w")
+        # Results display with scrollbar
+        scrollbar = tk.Scrollbar(results_frame)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         
-        # Results display
-        self.results_text = tk.Text(results_frame, height=12, width=70, font=("Courier", 10), state=tk.DISABLED)
-        self.results_text.pack(pady=10, fill=tk.BOTH, expand=True)
+        self.results_text = tk.Text(
+            results_frame, 
+            height=12, 
+            width=75, 
+            font=("Courier", 10),
+            state=tk.DISABLED,
+            yscrollcommand=scrollbar.set
+        )
+        self.results_text.pack(pady=5, fill=tk.BOTH, expand=True)
+        scrollbar.config(command=self.results_text.yview)
         
         # Progress label
-        self.progress_label = tk.Label(self.root, text="", font=("Arial", 10), fg="blue")
+        self.progress_label = tk.Label(
+            self.root, 
+            text="", 
+            font=("Arial", 10),
+            fg="blue",
+            bg='#f0f0f0'
+        )
         self.progress_label.pack(pady=5)
+        
+        # Button frame
+        button_frame = tk.Frame(self.root, bg='#f0f0f0')
+        button_frame.pack(pady=15)
         
         # Clear button
         clear_btn = tk.Button(
-            self.root, 
+            button_frame, 
             text="🔄 Clear", 
             command=self.clear_results, 
-            font=("Arial", 11), 
+            font=("Arial", 11, "bold"), 
             bg="#2196F3", 
             fg="white", 
             padx=20, 
-            pady=8
+            pady=8,
+            cursor="hand2",
+            relief=tk.RAISED,
+            bd=2
         )
-        clear_btn.pack(pady=10)
+        clear_btn.pack(side=tk.LEFT, padx=10)
+        
+        # Exit button
+        exit_btn = tk.Button(
+            button_frame,
+            text="❌ Exit",
+            command=self.root.quit,
+            font=("Arial", 11, "bold"),
+            bg="#f44336",
+            fg="white",
+            padx=20,
+            pady=8,
+            cursor="hand2",
+            relief=tk.RAISED,
+            bd=2
+        )
+        exit_btn.pack(side=tk.LEFT, padx=10)
     
     def upload_image(self):
         """Handle image upload"""
@@ -171,7 +230,7 @@ class BallDetectorApp:
     def _process_image(self, file_path):
         """Process image in background thread"""
         try:
-            self.progress_label.config(text="Processing image...", fg="blue")
+            self.progress_label.config(text="⏳ Processing image...", fg="blue")
             self.root.update()
             
             self.display_image(file_path)
@@ -194,12 +253,11 @@ class BallDetectorApp:
                 img = img.convert('RGB')
             
             # Thumbnail for display
-            img.thumbnail((400, 400), Image.Resampling.LANCZOS)
+            img.thumbnail((450, 450), Image.Resampling.LANCZOS)
             photo = ImageTk.PhotoImage(img)
             
             self.image_label.config(image=photo)
-            self.image_label.config(image=photo)
-            self.photo_reference = photo  # Store a reference to prevent garbage collection
+            self.image_reference = photo  # Store reference to prevent garbage collection
             
         except Exception as e:
             messagebox.showerror("Image Error", f"Failed to load image: {str(e)}")
@@ -222,6 +280,7 @@ class BallDetectorApp:
             # Make prediction with low verbosity
             if self.model is None:
                 raise ValueError("Model is not loaded. Please ensure the model file exists and is loaded correctly.")
+            
             predictions = self.model.predict(img_array, verbose=0)
             
             # Validate predictions
@@ -249,13 +308,14 @@ class BallDetectorApp:
             self.results_text.config(state=tk.DISABLED)
             return
         
-        # Top prediction
+        # Top prediction with enhanced formatting
         result_text = f"🎯 TOP PREDICTION:\n"
-        result_text += f"Ball Type: {BALL_CLASSES[predicted_class]}\n"
+        result_text += f"{'━'*60}\n"
+        result_text += f"Ball Type: {BALL_CLASSES[predicted_class].upper()}\n"
         result_text += f"Confidence: {confidence*100:.2f}%\n"
-        result_text += f"\n{'='*60}\n"
+        result_text += f"\n{'═'*60}\n"
         result_text += f"ALL PREDICTIONS (sorted by confidence):\n"
-        result_text += f"{'='*60}\n\n"
+        result_text += f"{'═'*60}\n\n"
         
         # Sort all predictions by confidence (descending)
         sorted_indices = np.argsort(predictions)[::-1]
@@ -275,8 +335,8 @@ class BallDetectorApp:
             else:
                 result_text += f"  {rank}. {ball_type:<20} {confidence_pct:6.2f}% [{bar}]\n"
         
-        result_text += f"\n{'='*60}\n"
-        result_text += f"Note: Model confidence varies by training data quality"
+        result_text += f"\n{'═'*60}\n"
+        result_text += f"Note: Higher confidence indicates more reliable detection"
         
         self.results_text.insert(1.0, result_text)
         self.results_text.config(state=tk.DISABLED)
@@ -284,13 +344,23 @@ class BallDetectorApp:
     def clear_results(self):
         """Clear all results and image"""
         self.image_label.config(image='')
+        self.image_label.config(image='')
         self.results_text.config(state=tk.NORMAL)
         self.results_text.delete(1.0, tk.END)
         self.results_text.config(state=tk.DISABLED)
         self.progress_label.config(text="")
 
 
+def main():
+    """Main entry point"""
+    try:
+        root = tk.Tk()
+        app = BallDetectorApp(root)
+        root.mainloop()
+    except Exception as e:
+        print(f"Error: {str(e)}")
+        messagebox.showerror("Error", f"Application error: {str(e)}")
+
+
 if __name__ == "__main__":
-    root = tk.Tk()
-    app = BallDetectorApp(root)
-    root.mainloop()
+    main()

@@ -1,17 +1,24 @@
+# pyright: reportAttributeAccessIssue=false
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'venv', 'lib', 'site-packages'))
+
 import tensorflow as tf
 import keras
 import math
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
+from tensorflow import keras
 from sklearn.metrics import confusion_matrix, classification_report
-from tf.keras.models import Sequential, Model
-from tensorflow.keras.layers import Conv2D, MaxPooling2D, Flatten, Dense, Dropout, BatchNormalization, Input, GlobalAveragePooling2D
+from keras.models import Sequential, Model
+from keras.layers import Conv2D, MaxPooling2D, Flatten, Dense, Dropout, BatchNormalization, Input, GlobalAveragePooling2D
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
-from tf.keras.optimizers import Adam
-from tf.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau, TensorBoard
-from tf.keras.applications import MobileNetV2
+from keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau, TensorBoard
+from keras.applications import MobileNetV2
 from datetime import datetime
+
+optimizer = tf.keras.optimizers.legacy.Adam()
 
 # ============ CONFIGURATION ============
 TRAIN_IMAGE = 'C:/Users/huyph/Downloads/Dataset/train'
@@ -93,7 +100,7 @@ print("⚙️  Compiling model...")
 model.compile(
     optimizer=Adam(learning_rate=0.001),
     loss='categorical_crossentropy',
-    metrics=['accuracy', tf.keras.metrics.TopKCategoricalAccuracy(k=2, name='top_2_accuracy')]
+    metrics=['accuracy', keras.metrics.TopKCategoricalAccuracy(k=2, name='top_2_accuracy')]
 )
 
 model.summary()
@@ -158,7 +165,7 @@ for layer in base_model.layers[:-30]:  # Keep early layers frozen
 model.compile(
     optimizer=Adam(learning_rate=1e-5),
     loss='categorical_crossentropy',
-    metrics=['accuracy', tf.keras.metrics.TopKCategoricalAccuracy(k=2, name='top_2_accuracy')]
+    metrics=['accuracy', keras.metrics.TopKCategoricalAccuracy(k=2, name='top_2_accuracy')]
 )
 
 # Continue training

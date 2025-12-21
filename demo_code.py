@@ -7,6 +7,7 @@ import os
 from datetime import datetime
 import matplotlib.pyplot as plt
 from pathlib import Path
+from PIL import Image
 
 # ============ CONFIGURATION ============
 BALL_CLASSES = [
@@ -173,8 +174,92 @@ class BallImageDetector:
         # Visualize with matplotlib
         self.visualize_prediction(original_img, result, img_path)
     
+    def annotate_image_with_detection(self, img_array, predicted_class, confidence, class_name):
+        """Add detection annotations directly on the image"""
+        import cv2
+        
+        # Convert PIL image to numpy array if needed
+        if isinstance(img_array, Image.Image):
+            img_array = np.array(img_array)
+        
+        # Convert RGB to BGR for OpenCV
+        if len(img_array.shape) == 3 and img_array.shape[2] == 3:
+            img_cv = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+        else:
+            img_cv = img_array.copy()
+        
+        height, width = img_cv.shape[:2]
+        
+        # Define colors (BGR format for OpenCV)
+        colors = {
+            'basketball': (0, 165, 255),      # Orange
+            'billiard_ball': (255, 255, 255), # White
+            'bowling_ball': (0, 0, 0),        # Black
+            'football': (0, 165, 255),        # Orange
+            'tennis_ball': (0, 255, 0),       # Green
+            'volleyball': (255, 255, 0)       # Cyan
+        }
+        
+        ball_color = colors.get(class_name, (0, 255, 0))
+        
+        # Draw semi-transparent overlay
+        overlay = img_cv.copy()
+        
+        # Top banner
+        cv2.rectangle(overlay, (0, 0), (width, int(height * 0.2)), (0, 0, 0), -1)
+        cv2.addWeighted(overlay, 0.6, img_cv, 0.4, 0, img_cv)
+        
+        # Bottom info box
+        cv2.rectangle(img_cv, (0, int(height * 0.85)), (width, height), (0, 0, 0), -1)
+        overlay2 = img_cv.copy()
+        cv2.rectangle(overlay2, (0, int(height * 0.85)), (width, height), (0, 0, 0), -1)
+        cv2.addWeighted(overlay2, 0.6, img_cv, 0.4, 0, img_cv)
+        
+        # Calculate font scale based on image size
+        font_scale = max(0.8, min(width, height) / 300)
+        thickness = max(2, int(font_scale))
+        
+        # Main detection text
+        text_main = f"BALL DETECTED: {class_name.upper()}"
+        text_size_main = cv2.getTextSize(text_main, cv2.FONT_HERSHEY_BOLD, font_scale * 1.2, thickness + 1)[0]
+        text_x_main = (width - text_size_main[0]) // 2
+        text_y_main = int(height * 0.12)
+        
+        # Draw text with outline
+        cv2.putText(img_cv, text_main, (text_x_main, text_y_main), 
+                   cv2.FONT_HERSHEY_BOLD, font_scale * 1.2, (0, 0, 0), thickness + 3)
+        cv2.putText(img_cv, text_main, (text_x_main, text_y_main), 
+                   cv2.FONT_HERSHEY_BOLD, font_scale * 1.2, ball_color, thickness)
+        
+        # Confidence text
+        text_conf = f"Confidence: {confidence*100:.1f}%"
+        text_size_conf = cv2.getTextSize(text_conf, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)[0]
+        text_x_conf = (width - text_size_conf[0]) // 2
+        text_y_conf = int(height * 0.18)
+        
+        cv2.putText(img_cv, text_conf, (text_x_conf, text_y_conf), 
+                   cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 0, 0), thickness + 2)
+        cv2.putText(img_cv, text_conf, (text_x_conf, text_y_conf), 
+                   cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), thickness)
+        
+        # Bottom info
+        text_info = f"Detected: {class_name.upper()}"
+        text_size_info = cv2.getTextSize(text_info, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)[0]
+        text_x_info = (width - text_size_info[0]) // 2
+        text_y_info = int(height * 0.93)
+        
+        cv2.putText(img_cv, text_info, (text_x_info, text_y_info), 
+                   cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 0, 0), thickness + 2)
+        cv2.putText(img_cv, text_info, (text_x_info, text_y_info), 
+                   cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), thickness)
+        
+        # Convert back to RGB for matplotlib
+        img_annotated = cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB)
+        
+        return img_annotated
+    
     def visualize_prediction(self, img, result, img_path):
-        """Create detailed visualization of prediction"""
+        """Create detailed visualization of prediction with annotations on image"""
         predicted_class = result['class']
         confidence = result['confidence']
         all_scores = result['all_scores']
@@ -182,11 +267,13 @@ class BallImageDetector:
         
         fig = plt.figure(figsize=(16, 6))
         
-        # Display image
+        # Annotate the image with detection results
+        img_annotated = self.annotate_image_with_detection(img, predicted_class, confidence, class_name)
+        
+        # Display annotated image
         ax1 = plt.subplot(1, 2, 1)
-        img_resized = np.array(img)
-        ax1.imshow(img_resized)
-        ax1.set_title(f'Detected Ball: {class_name.upper()}\nConfidence: {confidence*100:.2f}%', 
+        ax1.imshow(img_annotated)
+        ax1.set_title(f'Image with Detection Results', 
                       fontsize=14, fontweight='bold', color='green')
         ax1.axis('off')
         

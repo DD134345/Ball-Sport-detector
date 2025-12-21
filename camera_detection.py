@@ -21,7 +21,7 @@ BALL_CLASSES = [
 
 IMAGE_SIZE = (224, 224)  # Must match training size
 MODEL_PATH = 'Ball_sport_classifier.h5'
-CONFIDENCE_THRESHOLD = 0.4  # Minimum confidence to display prediction
+CONFIDENCE_THRESHOLD = 0.35  # Minimum confidence to display prediction (lowered for better detection)
 
 # Colors for display (BGR format for OpenCV)
 CLASS_COLORS = {
@@ -41,10 +41,12 @@ class CameraBallDetector:
         self.cap = None
         self.fps = 0
         self.frame_count = 0
-        self.predictions_history = deque(maxlen=10)  # Keep last 10 predictions for smoothing
+        self.predictions_history = deque(maxlen=15)  # Keep last 15 predictions for better smoothing
         self.frame_skip = 2  # Process every 2nd frame for faster performance
         self.frame_counter = 0
         self.is_running = True
+        self.enhance_image = True  # Enable image enhancement for better detection
+        self.detection_count = 0  # Track number of successful detections
         
         print("🔄 Initializing Ball Detector...")
         self.load_model()
@@ -102,18 +104,57 @@ class CameraBallDetector:
             print(f"✗ Failed to initialize camera: {str(e)}")
             raise
     
-    def predict_frame(self, frame):
-        """Predict ball type from a frame with optimized preprocessing"""
+    def enhance_frame(self, frame):
+        """Enhance frame for better ball detection"""
+        if not self.enhance_image:
+            return frame
+        
         try:
+            # Convert to LAB color space for better enhancement
+            lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+            l, a, b = cv2.split(lab)
+            
+            # Apply CLAHE (Contrast Limited Adaptive Histogram Equalization) to L channel
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+            l = clahe.apply(l)
+            
+            # Merge channels and convert back to BGR
+            enhanced = cv2.merge([l, a, b])
+            enhanced = cv2.cvtColor(enhanced, cv2.COLOR_LAB2BGR)
+            
+            # Slight sharpening for better edge detection
+            kernel = np.array([[-1, -1, -1],
+                             [-1,  9, -1],
+                             [-1, -1, -1]])
+            sharpened = cv2.filter2D(enhanced, -1, kernel * 0.1)
+            
+            # Blend original and sharpened
+            enhanced = cv2.addWeighted(enhanced, 0.7, sharpened, 0.3, 0)
+            
+            return enhanced
+        except Exception as e:
+            # If enhancement fails, return original frame
+            return frame
+    
+    def predict_frame(self, frame):
+        """Predict ball type from a frame with optimized preprocessing and enhancement"""
+        try:
+            # Enhance frame for better detection
+            enhanced_frame = self.enhance_frame(frame)
+            
             # Preprocess frame for model
             # Resize to match training size
-            resized_frame = cv2.resize(frame, IMAGE_SIZE, interpolation=cv2.INTER_LINEAR)
+            resized_frame = cv2.resize(enhanced_frame, IMAGE_SIZE, interpolation=cv2.INTER_LINEAR)
             
-            # Convert BGR to RGB
+            # Convert BGR to RGB (model expects RGB)
             rgb_frame = cv2.cvtColor(resized_frame, cv2.COLOR_BGR2RGB)
             
-            # Normalize
+            # Normalize to [0, 1] range (matching training preprocessing)
             img_array = np.array(rgb_frame, dtype=np.float32) / 255.0
+            
+            # Validate normalization
+            if np.isnan(img_array).any() or np.isinf(img_array).any():
+                raise ValueError("Invalid pixel values after normalization")
             
             # Add batch dimension
             img_array = np.expand_dims(img_array, axis=0)
@@ -125,6 +166,10 @@ class CameraBallDetector:
             predictions = self.model.predict(img_array, verbose=0)
             prediction_scores = predictions[0]
             
+            # Validate predictions
+            if np.isnan(prediction_scores).any() or np.isinf(prediction_scores).any():
+                raise ValueError("Model returned invalid predictions")
+            
             # Get top prediction
             predicted_class = np.argmax(prediction_scores)
             confidence = prediction_scores[predicted_class]
@@ -133,8 +178,12 @@ class CameraBallDetector:
             self.predictions_history.append({
                 'class': predicted_class,
                 'confidence': confidence,
-                'all_scores': prediction_scores
+                'all_scores': prediction_scores.copy()
             })
+            
+            # Increment detection count if confidence is above threshold
+            if confidence >= CONFIDENCE_THRESHOLD:
+                self.detection_count += 1
             
             return predicted_class, confidence, prediction_scores
             
@@ -143,20 +192,38 @@ class CameraBallDetector:
             return None, 0, None
     
     def get_smoothed_prediction(self):
-        """Get smoothed prediction from history (reduces flickering)"""
+        """Get smoothed prediction from history (reduces flickering) with improved algorithm"""
         if not self.predictions_history:
             return None, 0, None
         
-        # Use weighted average based on recency
+        # Use weighted average based on recency (more recent = higher weight)
         classes = [p['class'] for p in self.predictions_history]
         confidences = [p['confidence'] for p in self.predictions_history]
         
-        # Get most common class from recent predictions
-        most_common_class = max(set(classes), key=classes.count)
+        # Weight recent predictions more heavily
+        weights = np.linspace(0.5, 1.0, len(self.predictions_history))
         
-        # Average confidence for that class
-        avg_confidence = np.mean([c for cls, c in zip(classes, confidences) 
-                                  if cls == most_common_class])
+        # Get most common class from recent predictions (with weights)
+        class_votes = {}
+        for i, (cls, conf, weight) in enumerate(zip(classes, confidences, weights)):
+            if cls not in class_votes:
+                class_votes[cls] = 0
+            # Vote strength = confidence * weight
+            class_votes[cls] += conf * weight
+        
+        # Get class with highest weighted votes
+        most_common_class = max(class_votes, key=lambda x: class_votes[x])
+        
+        # Weighted average confidence for that class
+        weighted_confidences = [c * w for cls, c, w in zip(classes, confidences, weights) 
+                               if cls == most_common_class]
+        weights_for_class = [w for cls, w in zip(classes, weights) 
+                           if cls == most_common_class]
+        
+        if weighted_confidences:
+            avg_confidence = np.sum(weighted_confidences) / np.sum(weights_for_class)
+        else:
+            avg_confidence = confidences[-1]
         
         # Get latest scores
         latest_scores = self.predictions_history[-1]['all_scores']
@@ -187,28 +254,37 @@ class CameraBallDetector:
             
             # Draw main prediction box with semi-transparent background
             overlay = frame.copy()
-            cv2.rectangle(overlay, (10, 70), (width - 10, 180), color, -1)
+            cv2.rectangle(overlay, (10, 70), (width - 10, 200), color, -1)
             cv2.addWeighted(overlay, 0.2, frame, 0.8, 0, frame)
             
-            # Draw border
-            cv2.rectangle(frame, (10, 70), (width - 10, 180), color, 3)
+            # Draw border with thicker line for visibility
+            cv2.rectangle(frame, (10, 70), (width - 10, 200), color, 3)
             
-            # Draw text
-            cv2.putText(frame, "DETECTED BALL:", 
-                        (20, 105), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
-            cv2.putText(frame, f"{ball_name.upper()}", 
-                        (20, 155), cv2.FONT_HERSHEY_SIMPLEX, 1.5, color, 3)
+            # Draw detection indicator
+            cv2.circle(frame, (30, 90), 8, color, -1)
+            cv2.putText(frame, "BALL DETECTED!", 
+                        (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+            
+            # Draw ball type with larger, bolder text
+            cv2.putText(frame, f"Type: {ball_name.upper()}", 
+                        (20, 140), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 3)
+            cv2.putText(frame, f"Type: {ball_name.upper()}", 
+                        (20, 140), cv2.FONT_HERSHEY_SIMPLEX, 1.2, color, 2)
+            
+            # Draw detection count
+            cv2.putText(frame, f"Detections: {self.detection_count}", 
+                        (20, 180), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
             
             # Draw confidence score with bar
             confidence_pct = confidence * 100
             bar_width = int((confidence_pct / 100) * 350)
-            cv2.rectangle(frame, (10, 190), (360, 220), (200, 200, 200), 2)
-            cv2.rectangle(frame, (10, 190), (10 + bar_width, 220), color, -1)
+            cv2.rectangle(frame, (10, 210), (360, 240), (200, 200, 200), 2)
+            cv2.rectangle(frame, (10, 210), (10 + bar_width, 240), color, -1)
             cv2.putText(frame, f"Confidence: {confidence_pct:.1f}%", 
-                        (20, 210), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+                        (20, 230), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
             
             # Draw top 3 predictions
-            y_offset = 240
+            y_offset = 260
             cv2.putText(frame, "Top Predictions:", 
                         (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
             
@@ -226,19 +302,29 @@ class CameraBallDetector:
                 cv2.putText(frame, text, 
                             (20, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.7, text_color, 2)
         else:
-            # No confident prediction
+            # No confident prediction - show helpful message
             overlay = frame.copy()
             cv2.rectangle(overlay, (10, 70), (width - 10, 180), (0, 0, 255), -1)
             cv2.addWeighted(overlay, 0.2, frame, 0.8, 0, frame)
             cv2.rectangle(frame, (10, 70), (width - 10, 180), (0, 0, 255), 3)
             
-            cv2.putText(frame, "No ball detected or confidence too low", 
-                        (20, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
+            cv2.putText(frame, "SEARCHING FOR BALL...", 
+                        (20, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
+            cv2.putText(frame, "Point camera at a ball", 
+                        (20, 145), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
+            
+            # Show top prediction even if below threshold
+            if predicted_class is not None and all_scores is not None:
+                top_class_idx = np.argmax(all_scores)
+                top_confidence = all_scores[top_class_idx] * 100
+                top_ball_name = BALL_CLASSES[top_class_idx]
+                cv2.putText(frame, f"Best guess: {top_ball_name} ({top_confidence:.1f}%)", 
+                            (20, 170), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (150, 150, 255), 1)
         
         # Draw instructions at bottom
-        instruction_text = "Press 'Q' to quit | 'S' to save | 'R' to reset | 'SPACE' to pause"
+        instruction_text = "Q:Quit | S:Save | R:Reset | SPACE:Pause | E:Enhance | C:Stats"
         cv2.putText(frame, instruction_text, 
-                    (10, height - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+                    (10, height - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
         
         return frame
     
@@ -252,7 +338,11 @@ class CameraBallDetector:
         print("  'S' - Save screenshot")
         print("  'R' - Reset prediction history")
         print("  'SPACE' - Pause/Resume detection")
+        print("  'E' - Toggle image enhancement")
+        print("  'C' - Show detection statistics")
         print("\n" + "="*70 + "\n")
+        print("💡 TIP: Point the camera at a ball (basketball, football, tennis ball, etc.)")
+        print("   The system will detect and identify the ball type in real-time!\n")
         
         prev_time = time.time()
         frame_count = 0
@@ -313,21 +403,35 @@ class CameraBallDetector:
                     cv2.imwrite(filename, frame)
                     print(f"✓ Screenshot saved: {filename}")
                 elif key == ord('r') or key == ord('R'):
-                    # Reset prediction history
+                    # Reset prediction history and detection count
                     self.predictions_history.clear()
-                    print("✓ Prediction history reset")
+                    self.detection_count = 0
+                    print("✓ Prediction history and detection count reset")
                 elif key == ord(' '):
                     # Pause/Resume
                     is_paused = not is_paused
                     status = "PAUSED" if is_paused else "RUNNING"
                     print(f"✓ Detection {status}")
+                elif key == ord('e') or key == ord('E'):
+                    # Toggle image enhancement
+                    self.enhance_image = not self.enhance_image
+                    status = "ENABLED" if self.enhance_image else "DISABLED"
+                    print(f"✓ Image enhancement {status}")
                 elif key == ord('c') or key == ord('C'):
                     # Print statistics
+                    print(f"\n📊 Detection Statistics:")
+                    print(f"  Total Detections: {self.detection_count}")
+                    print(f"  FPS: {self.fps:.1f}")
+                    print(f"  Image Enhancement: {'ON' if self.enhance_image else 'OFF'}")
                     if predicted_class is not None:
-                        print(f"\n📊 Current Detection Statistics:")
-                        print(f"  Detected Ball: {BALL_CLASSES[predicted_class]}")
+                        print(f"  Current Ball: {BALL_CLASSES[predicted_class]}")
                         print(f"  Confidence: {confidence*100:.2f}%")
-                        print(f"  FPS: {self.fps:.1f}")
+                        if all_scores is not None:
+                            print(f"  Top 3 Predictions:")
+                            sorted_indices = np.argsort(all_scores)[::-1]
+                            for rank, idx in enumerate(sorted_indices[:3], 1):
+                                print(f"    {rank}. {BALL_CLASSES[idx]}: {all_scores[idx]*100:.2f}%")
+                    print()
             
             except KeyboardInterrupt:
                 print("\n\n✓ Detection interrupted by user")

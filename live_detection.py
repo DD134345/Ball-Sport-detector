@@ -4,7 +4,7 @@ from tensorflow.keras.preprocessing import image
 import numpy as np
 import tkinter as tk
 from tkinter import filedialog, messagebox
-from PIL import Image, ImageTk
+from PIL import Image, ImageTk, ImageDraw, ImageFont
 import os
 import threading
 from pathlib import Path
@@ -35,6 +35,8 @@ class BallDetectorApp:
         # Load model
         self.model = None
         self.is_loading = False
+        self.current_image_path = None
+        self.current_predictions = None
         self.load_model()
         
         # Create UI
@@ -233,18 +235,24 @@ class BallDetectorApp:
             self.progress_label.config(text="⏳ Processing image...", fg="blue")
             self.root.update()
             
+            # First display image without annotations
             self.display_image(file_path)
+            
+            # Then predict and update with annotations
             self.predict_ball(file_path)
             
-            self.progress_label.config(text="")
+            self.progress_label.config(text="✓ Detection Complete!", fg="green")
             
         except Exception as e:
             self.progress_label.config(text="")
             messagebox.showerror("Error", f"Failed to process image: {str(e)}")
     
-    def display_image(self, file_path):
-        """Display the selected image with validation"""
+    def display_image(self, file_path, predictions=None, predicted_class=None, confidence=None):
+        """Display the selected image with detection annotations"""
         try:
+            # Store current image path
+            self.current_image_path = file_path
+            
             # Validate and load image
             img = Image.open(file_path)
             
@@ -252,15 +260,129 @@ class BallDetectorApp:
             if img.mode != 'RGB':
                 img = img.convert('RGB')
             
-            # Thumbnail for display
-            img.thumbnail((450, 450), Image.Resampling.LANCZOS)
-            photo = ImageTk.PhotoImage(img)
+            # Create a copy for annotation
+            img_copy = img.copy()
+            
+            # Add detection annotations if available
+            if predictions is not None and predicted_class is not None:
+                img_copy = self.annotate_image(img_copy, predicted_class, confidence)
+            
+            # Thumbnail for display (keep aspect ratio)
+            display_size = (600, 600)
+            img_copy.thumbnail(display_size, Image.Resampling.LANCZOS)
+            
+            photo = ImageTk.PhotoImage(img_copy)
             
             self.image_label.config(image=photo)
             self.image_reference = photo  # Store reference to prevent garbage collection
             
         except Exception as e:
             messagebox.showerror("Image Error", f"Failed to load image: {str(e)}")
+    
+    def annotate_image(self, img, predicted_class, confidence):
+        """Add detection annotations to the image"""
+        try:
+            # Create a drawing context
+            draw = ImageDraw.Draw(img)
+            
+            # Get image dimensions
+            width, height = img.size
+            
+            # Try to load a font, fallback to default if not available
+            try:
+                # Try to use a larger font
+                font_large = ImageFont.truetype("arial.ttf", size=int(height * 0.08))
+                font_medium = ImageFont.truetype("arial.ttf", size=int(height * 0.05))
+            except:
+                try:
+                    font_large = ImageFont.truetype("C:/Windows/Fonts/arial.ttf", size=int(height * 0.08))
+                    font_medium = ImageFont.truetype("C:/Windows/Fonts/arial.ttf", size=int(height * 0.05))
+                except:
+                    font_large = ImageFont.load_default()
+                    font_medium = ImageFont.load_default()
+            
+            # Get ball name and color
+            ball_name = BALL_CLASSES[predicted_class].upper()
+            confidence_pct = confidence * 100
+            
+            # Define colors (RGB format for PIL)
+            colors = {
+                'basketball': (255, 140, 0),      # Orange
+                'billiard_ball': (255, 255, 255), # White
+                'bowling_ball': (0, 0, 0),        # Black
+                'football': (139, 69, 19),        # Brown
+                'tennis_ball': (0, 255, 0),       # Green
+                'volleyball': (255, 255, 0)       # Yellow
+            }
+            
+            ball_color = colors.get(BALL_CLASSES[predicted_class], (0, 255, 0))
+            
+            # Draw semi-transparent background rectangle for text
+            overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
+            overlay_draw = ImageDraw.Draw(overlay)
+            
+            # Top banner
+            banner_height = int(height * 0.15)
+            overlay_draw.rectangle([(0, 0), (width, banner_height)], fill=(0, 0, 0, 180))
+            
+            # Bottom info box
+            info_height = int(height * 0.12)
+            overlay_draw.rectangle([(0, height - info_height), (width, height)], fill=(0, 0, 0, 180))
+            
+            # Blend overlay with original image
+            img = Image.alpha_composite(img.convert('RGBA'), overlay).convert('RGB')
+            draw = ImageDraw.Draw(img)
+            
+            # Draw main detection text at top
+            text_main = f"BALL DETECTED: {ball_name}"
+            text_confidence = f"Confidence: {confidence_pct:.1f}%"
+            
+            # Get text bounding boxes for centering
+            bbox_main = draw.textbbox((0, 0), text_main, font=font_large)
+            text_width_main = bbox_main[2] - bbox_main[0]
+            
+            bbox_conf = draw.textbbox((0, 0), text_confidence, font=font_medium)
+            text_width_conf = bbox_conf[2] - bbox_conf[0]
+            
+            # Draw text with outline for visibility
+            x_main = (width - text_width_main) // 2
+            y_main = int(banner_height * 0.3)
+            
+            # Draw outline (shadow effect)
+            for adj in range(-2, 3):
+                for adj2 in range(-2, 3):
+                    draw.text((x_main + adj, y_main + adj2), text_main, 
+                             font=font_large, fill=(0, 0, 0))
+            draw.text((x_main, y_main), text_main, font=font_large, fill=ball_color)
+            
+            # Draw confidence
+            x_conf = (width - text_width_conf) // 2
+            y_conf = int(banner_height * 0.7)
+            
+            for adj in range(-2, 3):
+                for adj2 in range(-2, 3):
+                    draw.text((x_conf + adj, y_conf + adj2), text_confidence, 
+                             font=font_medium, fill=(0, 0, 0))
+            draw.text((x_conf, y_conf), text_confidence, font=font_medium, fill=(255, 255, 255))
+            
+            # Draw bottom info
+            info_text = f"Detected Ball Type: {ball_name}"
+            bbox_info = draw.textbbox((0, 0), info_text, font=font_medium)
+            text_width_info = bbox_info[2] - bbox_info[0]
+            x_info = (width - text_width_info) // 2
+            y_info = height - int(info_height * 0.6)
+            
+            for adj in range(-1, 2):
+                for adj2 in range(-1, 2):
+                    draw.text((x_info + adj, y_info + adj2), info_text, 
+                             font=font_medium, fill=(0, 0, 0))
+            draw.text((x_info, y_info), info_text, font=font_medium, fill=(255, 255, 255))
+            
+            return img
+            
+        except Exception as e:
+            print(f"Annotation error: {str(e)}")
+            return img
     
     def predict_ball(self, file_path):
         """Predict the ball type with proper preprocessing"""
@@ -291,11 +413,24 @@ class BallDetectorApp:
             predicted_class = np.argmax(prediction_scores)
             confidence = prediction_scores[predicted_class]
             
+            # Store predictions
+            self.current_predictions = prediction_scores
+            
+            # Update image with annotations in main thread
+            self.root.after(0, self.update_image_with_detection, file_path, prediction_scores, predicted_class, confidence)
+            
             # Display results in main thread
             self.root.after(0, self.display_results, prediction_scores, predicted_class, confidence)
             
         except Exception as e:
             self.root.after(0, messagebox.showerror, "Prediction Error", f"Failed to predict: {str(e)}")
+    
+    def update_image_with_detection(self, file_path, predictions, predicted_class, confidence):
+        """Update the displayed image with detection annotations"""
+        try:
+            self.display_image(file_path, predictions, predicted_class, confidence)
+        except Exception as e:
+            print(f"Error updating image: {str(e)}")
     
     def display_results(self, predictions, predicted_class, confidence):
         """Display prediction results with confidence thresholds"""
@@ -344,7 +479,8 @@ class BallDetectorApp:
     def clear_results(self):
         """Clear all results and image"""
         self.image_label.config(image='')
-        self.image_label.config(image='')
+        self.current_image_path = None
+        self.current_predictions = None
         self.results_text.config(state=tk.NORMAL)
         self.results_text.delete(1.0, tk.END)
         self.results_text.config(state=tk.DISABLED)

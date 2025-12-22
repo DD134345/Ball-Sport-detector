@@ -1,7 +1,19 @@
 # pyright: reportAttributeAccessIssue=false
 import sys
 import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'venv', 'lib', 'site-packages'))
+
+# Get the directory of this script (handles paths with spaces correctly)
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Optional: Add venv to path if it exists (not required if venv is properly activated)
+venv_path = os.path.join(SCRIPT_DIR, 'venv', 'lib', 'site-packages')
+if os.path.exists(venv_path):
+    sys.path.insert(0, venv_path)
+
+# Also check for .venv
+venv_path_alt = os.path.join(SCRIPT_DIR, '.venv', 'lib', 'site-packages')
+if os.path.exists(venv_path_alt):
+    sys.path.insert(0, venv_path_alt)
 
 import tensorflow as tf
 import math
@@ -21,11 +33,26 @@ from datetime import datetime
 optimizer = tf.keras.optimizers.legacy.Adam()
 
 # ============ CONFIGURATION ============
-TRAIN_IMAGE = 'C:/Users/huyph/Downloads/Dataset/train'
-TEST_IMAGE = 'C:/Users/huyph/Downloads/Dataset/test'
+# Dataset paths - Update these to match your dataset location
+# Use os.path.join for cross-platform compatibility
+TRAIN_IMAGE = os.path.join('C:/Users/huyph/Downloads/Dataset/train')
+TEST_IMAGE = os.path.join('C:/Users/huyph/Downloads/Dataset/test')
+
+# Alternative: Use relative paths if dataset is in project folder
+# TRAIN_IMAGE = os.path.join(SCRIPT_DIR, 'Dataset', 'train')
+# TEST_IMAGE = os.path.join(SCRIPT_DIR, 'Dataset', 'test')
+
 IMAGE_SIZE = (224, 224)  # Increased for better feature extraction
 BATCH_SIZE = 16  # Reduced batch size for better generalization
 NUM_CLASSES = 6
+
+# Validate dataset paths exist
+if not os.path.exists(TRAIN_IMAGE):
+    print(f"⚠️  WARNING: Training directory not found: {TRAIN_IMAGE}")
+    print("   Please update TRAIN_IMAGE path in training_model.py")
+if not os.path.exists(TEST_IMAGE):
+    print(f"⚠️  WARNING: Test directory not found: {TEST_IMAGE}")
+    print("   Please update TEST_IMAGE path in training_model.py")
 
 # ============ DATA AUGMENTATION ============
 print("🔄 Setting up data augmentation...")

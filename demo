@@ -2,13 +2,15 @@ import cv2
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras.models import load_model
+import tkinter as tk
+from tkinter import filedialog
+import os
 
 # --- CONFIGURATION ---
 MODEL_PATH = 'ball_classification.h5'
-IMAGE_PATH = 'test_image.jpg'  # <--- Change this to your image filename
-IMG_SIZE = (224, 224)          # <--- Change if your model was trained with a different size (e.g., 150, 150)
+IMG_SIZE = (224, 224) 
 
-# Updated classes provided by you
+# Your specific classes
 CLASS_LABELS = [
     'basketball', 
     'billiard_ball', 
@@ -18,23 +20,40 @@ CLASS_LABELS = [
     'volleyball'
 ]
 
+def select_image():
+    """
+    Opens a file dialog to let the user select an image.
+    Returns the file path or None if cancelled.
+    """
+    # Create a hidden root window (we don't need a full GUI, just the popup)
+    root = tk.Tk()
+    root.withdraw() 
+    
+    print("Opening file selector...")
+    file_path = filedialog.askopenfilename(
+        title="Select an Image of a Ball",
+        filetypes=[("Image Files", "*.jpg *.jpeg *.png *.bmp *.webp")]
+    )
+    
+    # Destroy the root window after selection
+    root.destroy()
+    return file_path
+
 def preprocess_for_model(roi, target_size):
-    """
-    Prepares the cropped image region for the Keras model.
-    """
     # Resize to the input shape the model expects
     roi = cv2.resize(roi, target_size)
-    
-    # Convert to float and normalize (0-1)
-    # Note: If your model used distinct preprocessing (like -1 to 1), adjust here.
+    # Normalize (0-1)
     roi = roi.astype('float32') / 255.0
-    
-    # Add batch dimension (1, height, width, 3)
+    # Add batch dimension
     roi = np.expand_dims(roi, axis=0)
     return roi
 
 def main():
     # 1. Load the trained model
+    if not os.path.exists(MODEL_PATH):
+        print(f"Error: Model file '{MODEL_PATH}' not found in this folder.")
+        return
+
     try:
         print(f"Loading model from {MODEL_PATH}...")
         model = load_model(MODEL_PATH)
@@ -43,83 +62,79 @@ def main():
         print(f"Error loading model: {e}")
         return
 
-    # 2. Load the image
-    image = cv2.imread(IMAGE_PATH)
+    # 2. Select the image using the file dialog
+    image_path = select_image()
+    
+    if not image_path:
+        print("No image selected. Exiting.")
+        return
+        
+    print(f"Processing image: {image_path}")
+    image = cv2.imread(image_path)
+    
     if image is None:
-        print(f"Error: Could not read image at {IMAGE_PATH}")
+        print(f"Error: Could not read image.")
         return
     
     output_image = image.copy()
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-    # 3. Detect Balls (using Hough Circle Transform)
-    # Works best for Basketball, Billiard, Bowling, Tennis, Volleyball.
-    # Note: 'Football' (if American) might not be detected well here because it is oval.
+    # 3. Detect Balls (Hough Circle Transform)
+    # Note: Adjust param2 down (e.g., to 20 or 25) if it misses balls.
     circles = cv2.HoughCircles(
         gray, 
         cv2.HOUGH_GRADIENT, 
         dp=1.2, 
         minDist=50,       
         param1=50,        
-        param2=30,        # Threshold: Lower this if it misses balls, raise if too much noise
+        param2=30,        
         minRadius=10, 
         maxRadius=400
     )
 
     if circles is not None:
         circles = np.round(circles[0, :]).astype("int")
-        print(f"Found {len(circles)} potential object(s). classifying...")
+        print(f"Found {len(circles)} potential object(s). Classifying...")
 
         for (x, y, r) in circles:
-            # 4. Extract the Region of Interest (ROI) - The "Square"
-            # We add a little padding to the square so we don't cut off the edges of the ball
+            # 4. Extract ROI
             padding = 10 
             y_min = max(0, y - r - padding)
             y_max = min(image.shape[0], y + r + padding)
             x_min = max(0, x - r - padding)
             x_max = min(image.shape[1], x + r + padding)
 
-            # Crop the detected ball area
             roi = image[y_min:y_max, x_min:x_max]
+            if roi.size == 0: continue
 
-            if roi.size == 0:
-                continue
-
-            # 5. Predict using the .h5 model
+            # 5. Predict
             processed_roi = preprocess_for_model(roi, IMG_SIZE)
             predictions = model.predict(processed_roi, verbose=0)
             
-            # Get the result
-            # Assuming the model output is a softmax array
             class_idx = np.argmax(predictions[0])
             confidence = predictions[0][class_idx]
             label = CLASS_LABELS[class_idx]
 
-            # Optional: Only show if confidence is high enough
-            if confidence > 0.5:
-                # 6. Draw Square and Label on the original image
-                color = (0, 255, 0) # Green box
+            # 6. Draw results if confidence is decent (> 40%)
+            if confidence > 0.4:
+                # Green box
+                cv2.rectangle(output_image, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)
                 
-                # Draw square
-                cv2.rectangle(output_image, (x_min, y_min), (x_max, y_max), color, 2)
-                
-                # Draw label background for better visibility
+                # Label
                 label_text = f"{label}: {confidence*100:.1f}%"
                 (w, h), _ = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
-                cv2.rectangle(output_image, (x_min, y_min - 20), (x_min + w, y_min), color, -1)
-                
-                # Draw text
+                cv2.rectangle(output_image, (x_min, y_min - 20), (x_min + w, y_min), (0, 255, 0), -1)
                 cv2.putText(output_image, label_text, (x_min, y_min - 5),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
                 
-                print(f"Detected: {label} ({confidence:.2f})")
+                print(f"Detected: {label} with {confidence*100:.1f}% confidence")
 
         # Show result
         cv2.imshow("Ball Classification", output_image)
         cv2.waitKey(0)
         cv2.destroyAllWindows()
     else:
-        print("No circular objects detected. Try adjusting param2 in HoughCircles.")
+        print("No circular objects detected in this image.")
 
 if __name__ == "__main__":
     main()

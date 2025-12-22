@@ -30,7 +30,8 @@ from tensorflow.keras.applications import MobileNetV2
 from datetime import datetime
 
 # Initialize optimizer for initial training
-optimizer = tf.keras.optimizers.legacy.Adam()
+# Using standard Adam optimizer (compatible with Keras 3)
+optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
 
 # ============ CONFIGURATION ============
 # Dataset paths - Update these to match your dataset location
@@ -42,7 +43,7 @@ TEST_IMAGE = os.path.join('C:/Users/huyph/Downloads/Dataset/test')
 # TRAIN_IMAGE = os.path.join(SCRIPT_DIR, 'Dataset', 'train')
 # TEST_IMAGE = os.path.join(SCRIPT_DIR, 'Dataset', 'test')
 
-IMAGE_SIZE = (224, 224)  # Increased for better feature extraction
+IMAGE_SIZE = (192, 192)  # Increased for better feature extraction
 BATCH_SIZE = 16  # Reduced batch size for better generalization
 NUM_CLASSES = 6
 

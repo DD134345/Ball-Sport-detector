@@ -21,7 +21,7 @@ Set-Location $scriptPath
 
 # Run the training script
 Write-Host "Starting training..." -ForegroundColor Green
-python training_model.py
+python "$trainingScript"
 
 # Keep window open if there's an error
 if ($LASTEXITCODE -ne 0) {

@@ -19,7 +19,7 @@ BALL_CLASSES = [
     'volleyball'
 ]
 
-IMAGE_SIZE = (224, 224)  # Must match training size
+IMAGE_SIZE = (192, 192)  # Must match training size
 MODEL_PATH = 'Ball_sport_classifier.h5'
 CONFIDENCE_THRESHOLD = 0.35  # Minimum confidence to display prediction (lowered for better detection)
 

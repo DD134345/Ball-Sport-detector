@@ -35,9 +35,9 @@ optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
 
 # ============ CONFIGURATION ============
 # Dataset paths - Update these to match your dataset location
-# Use os.path.join for cross-platform compatibility
-TRAIN_IMAGE = os.path.join('C:/Users/huyph/Downloads/Dataset/train')
-TEST_IMAGE = os.path.join('C:/Users/huyph/Downloads/Dataset/test')
+# Use raw strings or os.path.normpath for Windows paths
+TRAIN_IMAGE = 'C:/Users/huyph/Downloads/Dataset/train'
+TEST_IMAGE = 'C:/Users/huyph/Downloads/Dataset/test'
 
 # Alternative: Use relative paths if dataset is in project folder
 # TRAIN_IMAGE = os.path.join(SCRIPT_DIR, 'Dataset', 'train')
@@ -46,6 +46,10 @@ TEST_IMAGE = os.path.join('C:/Users/huyph/Downloads/Dataset/test')
 IMAGE_SIZE = (192, 192)  # Increased for better feature extraction
 BATCH_SIZE = 16  # Reduced batch size for better generalization
 NUM_CLASSES = 6
+
+# Model file path
+MODEL_PATH = os.path.join(SCRIPT_DIR, 'Ball_sport_classifier.h5')
+LOAD_EXISTING_MODEL = True  # Set to True to continue training from existing model
 
 # Validate dataset paths exist
 if not os.path.exists(TRAIN_IMAGE):
@@ -93,45 +97,92 @@ test_generator = val_datagen.flow_from_directory(
 )
 
 # ============ MODEL ARCHITECTURE - TRANSFER LEARNING ============
-print("🏗️  Building optimized model with transfer learning...")
+# Initialize variables
+model = None
+base_model = None
 
-# Use pre-trained MobileNetV2 as base
-base_model = MobileNetV2(
-    input_shape=(IMAGE_SIZE[0], IMAGE_SIZE[1], 3),
-    include_top=False,
-    weights='imagenet'
-)
+# Check if existing model should be loaded
+if LOAD_EXISTING_MODEL and os.path.exists(MODEL_PATH):
+    print("📂 Loading existing model for continued training...")
+    print(f"   Model path: {MODEL_PATH}")
+    
+    try:
+        model = tf.keras.models.load_model(MODEL_PATH)
+        print("✓ Model loaded successfully!")
+        print(f"✓ Model input shape: {model.input_shape}")
+        print(f"✓ Model output shape: {model.output_shape}")
+        
+        # Get the base model from the loaded model
+        # The base model is typically the second layer (index 1) in Sequential models
+        if isinstance(model, Sequential) and len(model.layers) > 1:
+            base_model = model.layers[1]  # MobileNetV2 is usually the second layer
+            if hasattr(base_model, 'layers'):
+                print("✓ Base model found in loaded model")
+            else:
+                base_model = None
+        else:
+            base_model = None
+            
+        # Recompile with new optimizer for continued training
+        print("⚙️  Recompiling model for continued training...")
+        model.compile(
+            optimizer=optimizer,
+            loss='categorical_crossentropy',
+            metrics=['accuracy', tf.keras.metrics.TopKCategoricalAccuracy(k=2, name='top_2_accuracy')]
+        )
+        
+        model.summary()
+        
+    except Exception as e:
+        print(f"⚠️  Error loading existing model: {str(e)}")
+        print("   Building new model from scratch...")
+        LOAD_EXISTING_MODEL = False
 
-# Freeze initial layers for faster training
-base_model.trainable = False
+# Build new model if not loading existing one
+if not (LOAD_EXISTING_MODEL and os.path.exists(MODEL_PATH)):
+    print("🏗️  Building optimized model with transfer learning...")
+    
+    # Use pre-trained MobileNetV2 as base
+    base_model = MobileNetV2(
+        input_shape=(IMAGE_SIZE[0], IMAGE_SIZE[1], 3),
+        include_top=False,
+        weights='imagenet'
+    )
+    
+    # Freeze initial layers for faster training
+    base_model.trainable = False
+    
+    # Build custom top layers
+    model = Sequential([
+        Input(shape=(IMAGE_SIZE[0], IMAGE_SIZE[1], 3)),
+        base_model,
+        GlobalAveragePooling2D(),
+        Dense(512, activation='relu'),
+        BatchNormalization(),
+        Dropout(0.4),
+        Dense(256, activation='relu'),
+        BatchNormalization(),
+        Dropout(0.3),
+        Dense(128, activation='relu'),
+        BatchNormalization(),
+        Dropout(0.2),
+        Dense(NUM_CLASSES, activation='softmax')
+    ])
+    
+    # ============ COMPILE MODEL ============
+    print("⚙️  Compiling model...")
+    
+    model.compile(
+        optimizer=optimizer,
+        loss='categorical_crossentropy',
+        metrics=['accuracy', tf.keras.metrics.TopKCategoricalAccuracy(k=2, name='top_2_accuracy')]
+    )
+    
+    model.summary()
 
-# Build custom top layers
-model = Sequential([
-    Input(shape=(IMAGE_SIZE[0], IMAGE_SIZE[1], 3)),
-    base_model,
-    GlobalAveragePooling2D(),
-    Dense(512, activation='relu'),
-    BatchNormalization(),
-    Dropout(0.4),
-    Dense(256, activation='relu'),
-    BatchNormalization(),
-    Dropout(0.3),
-    Dense(128, activation='relu'),
-    BatchNormalization(),
-    Dropout(0.2),
-    Dense(NUM_CLASSES, activation='softmax')
-])
-
-# ============ COMPILE MODEL ============
-print("⚙️  Compiling model...")
-
-model.compile(
-    optimizer=optimizer,
-    loss='categorical_crossentropy',
-    metrics=['accuracy', tf.keras.metrics.TopKCategoricalAccuracy(k=2, name='top_2_accuracy')]
-)
-
-model.summary()
+# Ensure model is initialized
+if model is None:
+    raise RuntimeError("Model was not initialized. Please check dataset paths and model loading.")
 
 # ============ CALLBACKS ============
 print("📋 Setting up training callbacks...")
@@ -184,28 +235,55 @@ print("\n" + "="*60)
 print("🔧 FINE-TUNING - Unfreezing base model layers...")
 print("="*60)
 
-# Unfreeze the last layers of base model for fine-tuning
-base_model.trainable = True
-for layer in base_model.layers[:-30]:  # Keep early layers frozen
-    layer.trainable = False
+# Get base model for fine-tuning
+if base_model is None and model is not None and isinstance(model, Sequential) and len(model.layers) > 1:
+    base_model = model.layers[1]  # Try to get base model from loaded model
+    if not hasattr(base_model, 'layers'):
+        base_model = None
 
-# Recompile with lower learning rate for fine-tuning
-model.compile(
-    optimizer=tf.keras.optimizers.Adam(learning_rate=1e-5),
-    loss='categorical_crossentropy',
-    metrics=['accuracy', tf.keras.metrics.TopKCategoricalAccuracy(k=2, name='top_2_accuracy')]
-)
+# Only do fine-tuning if we have a base model
+if base_model is not None:
+    # Unfreeze the last layers of base model for fine-tuning
+    base_model.trainable = True
+    if hasattr(base_model, 'layers') and len(base_model.layers) > 30:
+        for layer in base_model.layers[:-30]:  # Keep early layers frozen
+            layer.trainable = False
+        print("✓ Unfrozen last 30 layers of base model for fine-tuning")
+    else:
+        base_model.trainable = True
+        print("✓ Unfrozen all base model layers for fine-tuning")
+else:
+    print("⚠️  Base model not found. Skipping fine-tuning step.")
+    print("   Continuing with regular training...")
 
-# Continue training
-history_finetune = model.fit(
-    train_generator,
-    epochs=50,
-    validation_data=test_generator,
-    steps_per_epoch=math.ceil(train_generator.samples / BATCH_SIZE),
-    validation_steps=math.ceil(test_generator.samples / BATCH_SIZE),
-    callbacks=callbacks,
-    verbose=1
-)
+# Continue training (only if base_model exists for fine-tuning)
+if base_model is not None:
+    # Recompile with lower learning rate for fine-tuning
+    if model is not None:
+        model.compile(
+            optimizer=tf.keras.optimizers.Adam(learning_rate=1e-5),
+            loss='categorical_crossentropy',
+            metrics=['accuracy', tf.keras.metrics.TopKCategoricalAccuracy(k=2, name='top_2_accuracy')]
+        )
+    history_finetune = model.fit(
+        train_generator,
+        epochs=50,
+        validation_data=test_generator,
+        steps_per_epoch=math.ceil(train_generator.samples / BATCH_SIZE),
+        validation_steps=math.ceil(test_generator.samples / BATCH_SIZE),
+        callbacks=callbacks,
+        verbose=1
+    )
+else:
+    # If no fine-tuning, create empty history for compatibility
+    history_finetune = type('obj', (object,), {
+        'history': {
+            'accuracy': [],
+            'val_accuracy': [],
+            'loss': [],
+            'val_loss': []
+        }
+    })()
 
 # ============ EVALUATION ============
 print("\n" + "="*60)
@@ -229,14 +307,24 @@ print("\n📈 Generating visualization plots...")
 fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
 # Combine history from both training phases
-all_accuracy = history.history['accuracy'] + history_finetune.history['accuracy']
-all_val_accuracy = history.history['val_accuracy'] + history_finetune.history['val_accuracy']
-all_loss = history.history['loss'] + history_finetune.history['loss']
-all_val_loss = history.history['val_loss'] + history_finetune.history['val_loss']
+if hasattr(history_finetune, 'history') and len(history_finetune.history.get('accuracy', [])) > 0:
+    all_accuracy = history.history['accuracy'] + history_finetune.history['accuracy']
+    all_val_accuracy = history.history['val_accuracy'] + history_finetune.history['val_accuracy']
+    all_loss = history.history['loss'] + history_finetune.history['loss']
+    all_val_loss = history.history['val_loss'] + history_finetune.history['val_loss']
+    fine_tuning_start = len(history.history['accuracy'])
+else:
+    # Only use initial training history if fine-tuning was skipped
+    all_accuracy = history.history['accuracy']
+    all_val_accuracy = history.history['val_accuracy']
+    all_loss = history.history['loss']
+    all_val_loss = history.history['val_loss']
+    fine_tuning_start = None
 
 axes[0].plot(all_accuracy, label='Train Accuracy', linewidth=2)
 axes[0].plot(all_val_accuracy, label='Validation Accuracy', linewidth=2)
-axes[0].axvline(x=len(history.history['accuracy']), color='red', linestyle='--', label='Fine-tuning Start')
+if fine_tuning_start is not None:
+    axes[0].axvline(x=fine_tuning_start, color='red', linestyle='--', label='Fine-tuning Start')
 axes[0].set_title('Model Accuracy Over Epochs', fontsize=14, fontweight='bold')
 axes[0].set_xlabel('Epoch')
 axes[0].set_ylabel('Accuracy')
@@ -245,7 +333,8 @@ axes[0].grid(True, alpha=0.3)
 
 axes[1].plot(all_loss, label='Train Loss', linewidth=2)
 axes[1].plot(all_val_loss, label='Validation Loss', linewidth=2)
-axes[1].axvline(x=len(history.history['loss']), color='red', linestyle='--', label='Fine-tuning Start')
+if fine_tuning_start is not None:
+    axes[1].axvline(x=fine_tuning_start, color='red', linestyle='--', label='Fine-tuning Start')
 axes[1].set_title('Model Loss Over Epochs', fontsize=14, fontweight='bold')
 axes[1].set_xlabel('Epoch')
 axes[1].set_ylabel('Loss')

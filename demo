@@ -8,8 +8,7 @@ import os
 
 # --- CONFIGURATION ---
 MODEL_PATH = 'ball_classification.h5'
-IMG_SIZE = (192, 192)   # The size your model expects (input_shape)
-DETECTION_WIDTH = 1024  # Size used ONLY for finding the circle (speeds up scanning)
+# IMG_SIZE is now removed. We will read it from the model automatically.
 
 CLASS_LABELS = [
     'basketball', 
@@ -31,40 +30,49 @@ def select_image():
     return file_path
 
 def preprocess_for_model(roi, target_size):
+    """
+    Resize the crop to match the model's expected input size.
+    """
     roi = cv2.resize(roi, target_size)
     roi = roi.astype('float32') / 255.0
     roi = np.expand_dims(roi, axis=0)
     return roi
 
 def main():
+    # 1. Load Model
     if not os.path.exists(MODEL_PATH):
         print(f"Error: Model file '{MODEL_PATH}' not found.")
         return
 
     try:
+        print(f"Loading model from {MODEL_PATH}...")
         model = load_model(MODEL_PATH)
+        
+        # --- NEW: Auto-detect Input Size ---
+        # model.input_shape usually looks like (None, Height, Width, Channels)
+        # We grab the Height and Width (index 1 and 2)
+        input_shape = model.input_shape[1:3]
+        print(f"Model loaded. It expects input size: {input_shape}")
+        
     except Exception as e:
         print(f"Error loading model: {e}")
         return
 
+    # 2. Select Image
     image_path = select_image()
     if not image_path: return
     
-    # 1. Load Original Image (High Resolution)
+    # Load image at ORIGINAL size
     original_image = cv2.imread(image_path)
     if original_image is None: return
     
     orig_h, orig_w = original_image.shape[:2]
     
-    # 2. Resize ONLY for detection scanning (to make it fast)
-    scale_ratio = DETECTION_WIDTH / float(orig_w)
-    new_height = int(orig_h * scale_ratio)
-    resized_image = cv2.resize(original_image, (DETECTION_WIDTH, new_height), interpolation=cv2.INTER_AREA)
-    
-    gray = cv2.cvtColor(resized_image, cv2.COLOR_BGR2GRAY)
+    # 3. Preprocess for Detection
+    gray = cv2.cvtColor(original_image, cv2.COLOR_BGR2GRAY)
     gray = cv2.GaussianBlur(gray, (9, 9), 2)
 
-    # 3. Detect Balls
+    # 4. Detect Balls
     circles = cv2.HoughCircles(
         gray, 
         cv2.HOUGH_GRADIENT, 
@@ -72,43 +80,30 @@ def main():
         minDist=50,       
         param1=50,        
         param2=30,        
-        minRadius=20,     
-        maxRadius=400
+        minRadius=10,     
+        maxRadius=int(min(orig_h, orig_w) / 1.5)
     )
 
-    final_output = original_image.copy()
-    ball_found = False
+    output_image = original_image.copy()
 
     if circles is not None:
         circles = np.round(circles[0, :]).astype("int")
-        print(f"Found {len(circles)} object(s). Scaling to original size...")
+        print(f"Found {len(circles)} object(s). Processing...")
         
-        for (x_small, y_small, r_small) in circles:
-            # --- STEP A: Scale coordinates back to ORIGINAL size ---
-            # We divide by scale_ratio to get the real pixel locations
-            x_real = int(x_small / scale_ratio)
-            y_real = int(y_small / scale_ratio)
-            r_real = int(r_small / scale_ratio)
+        for (x, y, r) in circles:
+            padding = int(r * 0.25)
             
-            # --- STEP B: Dynamic Padding ---
-            # Instead of fixed pixels, we take 25% of the radius as padding.
-            # This ensures the box fits the ball perfectly regardless of image size.
-            padding = int(r_real * 0.25)
-            
-            y_min = max(0, y_real - r_real - padding)
-            y_max = min(orig_h, y_real + r_real + padding)
-            x_min = max(0, x_real - r_real - padding)
-            x_max = min(orig_w, x_real + r_real + padding)
+            y_min = max(0, y - r - padding)
+            y_max = min(orig_h, y + r + padding)
+            x_min = max(0, x - r - padding)
+            x_max = min(orig_w, x + r + padding)
 
-            # Crop the FULL RESOLUTION ball
             roi = original_image[y_min:y_max, x_min:x_max]
             
-            # Skip if crop is invalid
-            if roi.size == 0 or roi.shape[0] == 0 or roi.shape[1] == 0:
-                continue
+            if roi.size == 0: continue
 
-            # 4. Predict
-            processed_roi = preprocess_for_model(roi, IMG_SIZE)
+            # --- USE AUTO-DETECTED SIZE HERE ---
+            processed_roi = preprocess_for_model(roi, input_shape)
             predictions = model.predict(processed_roi, verbose=0)
             
             class_idx = np.argmax(predictions[0])
@@ -116,47 +111,35 @@ def main():
             label = CLASS_LABELS[class_idx]
 
             if confidence > 0.4:
-                ball_found = True
-                
-                # --- STEP C: Dynamic Drawing Thickness ---
-                # Calculate line thickness based on image size so it's visible on 4K images
                 line_thickness = max(3, int(orig_w / 300))
                 font_scale = max(0.8, orig_w / 1000.0)
                 
-                # Draw Box on Original Image
-                cv2.rectangle(final_output, (x_min, y_min), (x_max, y_max), (0, 255, 0), line_thickness)
+                # Draw Box
+                cv2.rectangle(output_image, (x_min, y_min), (x_max, y_max), (0, 255, 0), line_thickness)
                 
                 # Draw Label
                 label_text = f"{label}: {confidence*100:.1f}%"
                 (w, h), _ = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, line_thickness)
                 
-                # Label Background
-                cv2.rectangle(final_output, (x_min, y_min - int(h*1.5)), (x_min + w, y_min), (0, 255, 0), -1)
-                
-                # Label Text
-                cv2.putText(final_output, label_text, (x_min, y_min - int(h*0.3)),
+                cv2.rectangle(output_image, (x_min, y_min - int(h*1.5)), (x_min + w, y_min), (0, 255, 0), -1)
+                cv2.putText(output_image, label_text, (x_min, y_min - int(h*0.3)),
                             cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 0, 0), line_thickness)
                 
-                print(f"Detected: {label} (Size: {x_max-x_min}x{y_max-y_min}px)")
+                print(f"Detected: {label}")
 
-    # 5. Display Logic (Handle huge images for viewing)
-    if ball_found:
-        print("Displaying result...")
-        # If image is too tall for screen (e.g. > 900px), shrink the VIEW only
-        screen_h_limit = 900
-        if final_output.shape[0] > screen_h_limit:
-            scale_view = screen_h_limit / final_output.shape[0]
-            new_w = int(final_output.shape[1] * scale_view)
-            new_h = int(final_output.shape[0] * scale_view)
-            view_img = cv2.resize(final_output, (new_w, new_h))
-            cv2.imshow("Result (Scaled to fit screen)", view_img)
-        else:
-            cv2.imshow("Result (Original)", final_output)
-            
-        cv2.waitKey(0)
-        cv2.destroyAllWindows()
+    # 5. Display Result
+    screen_h_limit = 900
+    if output_image.shape[0] > screen_h_limit:
+        scale_view = screen_h_limit / output_image.shape[0]
+        new_w = int(output_image.shape[1] * scale_view)
+        new_h = int(output_image.shape[0] * scale_view)
+        view_img = cv2.resize(output_image, (new_w, new_h))
+        cv2.imshow("Ball Classification", view_img)
     else:
-        print("No balls detected.")
+        cv2.imshow("Ball Classification", output_image)
+            
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
 
 if __name__ == "__main__":
     main()

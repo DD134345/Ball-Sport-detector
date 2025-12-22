@@ -34,14 +34,17 @@ from datetime import datetime
 optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
 
 # ============ CONFIGURATION ============
-# Dataset paths - Update these to match your dataset location
-# Use raw strings or os.path.normpath for Windows paths
-TRAIN_IMAGE = 'C:/Users/huyph/Downloads/Dataset/train'
-TEST_IMAGE = 'C:/Users/huyph/Downloads/Dataset/test'
+# Dataset paths - Using dataset from parent directory
+# Dataset is located at: E:\CSE Program\Ball Sport Detector Project\Dataset
+PARENT_DIR = os.path.dirname(SCRIPT_DIR)  # Go up one level from Ball-Sport-detector
+DATASET_DIR = os.path.join(PARENT_DIR, 'Dataset')
 
-# Alternative: Use relative paths if dataset is in project folder
-# TRAIN_IMAGE = os.path.join(SCRIPT_DIR, 'Dataset', 'train')
-# TEST_IMAGE = os.path.join(SCRIPT_DIR, 'Dataset', 'test')
+TRAIN_IMAGE = os.path.join(DATASET_DIR, 'train')
+TEST_IMAGE = os.path.join(DATASET_DIR, 'test')
+
+# Alternative: Use absolute path if the above doesn't work
+# TRAIN_IMAGE = r'E:\CSE Program\Ball Sport Detector Project\Dataset\train'
+# TEST_IMAGE = r'E:\CSE Program\Ball Sport Detector Project\Dataset\test'
 
 IMAGE_SIZE = (192, 192)  # Increased for better feature extraction
 BATCH_SIZE = 16  # Reduced batch size for better generalization
@@ -52,12 +55,26 @@ MODEL_PATH = os.path.join(SCRIPT_DIR, 'Ball_sport_classifier.h5')
 LOAD_EXISTING_MODEL = True  # Set to True to continue training from existing model
 
 # Validate dataset paths exist
-if not os.path.exists(TRAIN_IMAGE):
+print("\n" + "="*60)
+print("📁 DATASET PATH VALIDATION")
+print("="*60)
+if os.path.exists(TRAIN_IMAGE):
+    print(f"✓ Training directory found: {TRAIN_IMAGE}")
+else:
     print(f"⚠️  WARNING: Training directory not found: {TRAIN_IMAGE}")
-    print("   Please update TRAIN_IMAGE path in training_model.py")
-if not os.path.exists(TEST_IMAGE):
+    print("   Please check the dataset path in training_model.py")
+    
+if os.path.exists(TEST_IMAGE):
+    print(f"✓ Test directory found: {TEST_IMAGE}")
+else:
     print(f"⚠️  WARNING: Test directory not found: {TEST_IMAGE}")
-    print("   Please update TEST_IMAGE path in training_model.py")
+    print("   Please check the dataset path in training_model.py")
+
+if os.path.exists(TRAIN_IMAGE) and os.path.exists(TEST_IMAGE):
+    print("\n✓ All dataset paths validated successfully!")
+else:
+    print("\n⚠️  Some dataset paths are missing. Training may fail.")
+print("="*60 + "\n")
 
 # ============ DATA AUGMENTATION ============
 print("🔄 Setting up data augmentation...")

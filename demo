@@ -8,9 +8,8 @@ import os
 
 # --- CONFIGURATION ---
 MODEL_PATH = 'ball_classification.h5'
-IMG_SIZE = (224, 224) 
+IMG_SIZE = (192, 192)  # Input size for your model
 
-# Your specific classes
 CLASS_LABELS = [
     'basketball', 
     'billiard_ball', 
@@ -23,64 +22,59 @@ CLASS_LABELS = [
 def select_image():
     """
     Opens a file dialog to let the user select an image.
-    Returns the file path or None if cancelled.
     """
-    # Create a hidden root window (we don't need a full GUI, just the popup)
     root = tk.Tk()
-    root.withdraw() 
+    root.withdraw() # Hide the main tkinter window
     
-    print("Opening file selector...")
+    print("Please select an image file...")
     file_path = filedialog.askopenfilename(
         title="Select an Image of a Ball",
         filetypes=[("Image Files", "*.jpg *.jpeg *.png *.bmp *.webp")]
     )
     
-    # Destroy the root window after selection
     root.destroy()
     return file_path
 
 def preprocess_for_model(roi, target_size):
-    # Resize to the input shape the model expects
+    """
+    Resize and normalize the cropped ball image for the model.
+    """
     roi = cv2.resize(roi, target_size)
-    # Normalize (0-1)
     roi = roi.astype('float32') / 255.0
-    # Add batch dimension
     roi = np.expand_dims(roi, axis=0)
     return roi
 
 def main():
     # 1. Load the trained model
     if not os.path.exists(MODEL_PATH):
-        print(f"Error: Model file '{MODEL_PATH}' not found in this folder.")
+        print(f"Error: Model file '{MODEL_PATH}' not found.")
         return
 
     try:
-        print(f"Loading model from {MODEL_PATH}...")
         model = load_model(MODEL_PATH)
-        print("Model loaded successfully.")
+        print("Model loaded.")
     except Exception as e:
         print(f"Error loading model: {e}")
         return
 
-    # 2. Select the image using the file dialog
+    # 2. User selects an image
     image_path = select_image()
     
     if not image_path:
-        print("No image selected. Exiting.")
+        print("No image selected.")
         return
         
-    print(f"Processing image: {image_path}")
+    # 3. Read the image
     image = cv2.imread(image_path)
-    
     if image is None:
-        print(f"Error: Could not read image.")
+        print("Error: Could not read image.")
         return
     
+    # Create a copy to draw on, so we don't mess up the original data if we needed it
     output_image = image.copy()
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-    # 3. Detect Balls (Hough Circle Transform)
-    # Note: Adjust param2 down (e.g., to 20 or 25) if it misses balls.
+    # 4. Detect Balls (Hough Circle Transform)
     circles = cv2.HoughCircles(
         gray, 
         cv2.HOUGH_GRADIENT, 
@@ -92,22 +86,27 @@ def main():
         maxRadius=400
     )
 
+    ball_found = False
+
     if circles is not None:
         circles = np.round(circles[0, :]).astype("int")
-        print(f"Found {len(circles)} potential object(s). Classifying...")
-
+        
         for (x, y, r) in circles:
-            # 4. Extract ROI
-            padding = 10 
+            # 5. Extract the Square ROI (Region of Interest)
+            # We add a little padding (10px) to capture the edges of the ball
+            padding = 10
             y_min = max(0, y - r - padding)
             y_max = min(image.shape[0], y + r + padding)
             x_min = max(0, x - r - padding)
             x_max = min(image.shape[1], x + r + padding)
 
+            # Crop the square
             roi = image[y_min:y_max, x_min:x_max]
+
+            # Skip if the crop is empty
             if roi.size == 0: continue
 
-            # 5. Predict
+            # 6. Predict the class
             processed_roi = preprocess_for_model(roi, IMG_SIZE)
             predictions = model.predict(processed_roi, verbose=0)
             
@@ -115,26 +114,39 @@ def main():
             confidence = predictions[0][class_idx]
             label = CLASS_LABELS[class_idx]
 
-            # 6. Draw results if confidence is decent (> 40%)
+            # 7. Draw the Square and Label (if confidence is okay)
             if confidence > 0.4:
-                # Green box
-                cv2.rectangle(output_image, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)
+                ball_found = True
                 
-                # Label
+                # Draw the Green Square
+                cv2.rectangle(output_image, (x_min, y_min), (x_max, y_max), (0, 255, 0), 3)
+                
+                # Draw the Label Box and Text
                 label_text = f"{label}: {confidence*100:.1f}%"
                 (w, h), _ = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
-                cv2.rectangle(output_image, (x_min, y_min - 20), (x_min + w, y_min), (0, 255, 0), -1)
+                
+                # Filled green rectangle for text background
+                cv2.rectangle(output_image, (x_min, y_min - 25), (x_min + w, y_min), (0, 255, 0), -1)
+                
+                # Black text on green background
                 cv2.putText(output_image, label_text, (x_min, y_min - 5),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
                 
-                print(f"Detected: {label} with {confidence*100:.1f}% confidence")
+                print(f"Detected: {label}")
 
-        # Show result
-        cv2.imshow("Ball Classification", output_image)
-        cv2.waitKey(0)
-        cv2.destroyAllWindows()
     else:
-        print("No circular objects detected in this image.")
+        print("No balls detected using Circle Transform.")
+        # Optional: Write on image that nothing was found
+        cv2.putText(output_image, "No Ball Detected", (30, 30), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+
+    # 8. Show the final image to the user
+    # This window will appear on your screen
+    cv2.imshow("Ball Detection Result", output_image)
+    
+    # Wait until the user presses a key to close the window
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
 
 if __name__ == "__main__":
     main()

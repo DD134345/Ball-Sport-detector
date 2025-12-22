@@ -8,8 +8,8 @@ import os
 
 # --- CONFIGURATION ---
 MODEL_PATH = 'ball_classification.h5'
-IMG_SIZE = (192, 192)  
-TARGET_WIDTH = 1024  # <--- We will resize all images to this width for better detection
+IMG_SIZE = (192, 192)   # The size your model expects (input_shape)
+DETECTION_WIDTH = 1024  # Size used ONLY for finding the circle (speeds up scanning)
 
 CLASS_LABELS = [
     'basketball', 
@@ -24,7 +24,7 @@ def select_image():
     root = tk.Tk()
     root.withdraw()
     file_path = filedialog.askopenfilename(
-        title="Select an Image of a Ball",
+        title="Select an Image",
         filetypes=[("Image Files", "*.jpg *.jpeg *.png *.bmp *.webp")]
     )
     root.destroy()
@@ -35,27 +35,6 @@ def preprocess_for_model(roi, target_size):
     roi = roi.astype('float32') / 255.0
     roi = np.expand_dims(roi, axis=0)
     return roi
-
-def smart_resize(image, target_width):
-    """
-    Resizes image to a fixed width while maintaining aspect ratio.
-    This helps standardize detection parameters.
-    """
-    (h, w) = image.shape[:2]
-    
-    # Calculate ratio to scale width to target_width
-    r = target_width / float(w)
-    dim = (target_width, int(h * r))
-    
-    # INTER_AREA is better for shrinking, INTER_CUBIC is better for enlarging
-    if r < 1.0:
-        interpolation = cv2.INTER_AREA
-    else:
-        interpolation = cv2.INTER_CUBIC
-        
-    resized = cv2.resize(image, dim, interpolation=interpolation)
-    print(f"Original size: {w}x{h}, Resized to: {dim[0]}x{dim[1]}")
-    return resized
 
 def main():
     if not os.path.exists(MODEL_PATH):
@@ -70,22 +49,22 @@ def main():
 
     image_path = select_image()
     if not image_path: return
-        
-    image = cv2.imread(image_path)
-    if image is None: return
     
-    # --- NEW STEP: Smart Resize ---
-    # This ensures the image is always big enough for the detector
-    # but not so huge that it's slow or noisy.
-    processing_image = smart_resize(image, TARGET_WIDTH)
+    # 1. Load Original Image (High Resolution)
+    original_image = cv2.imread(image_path)
+    if original_image is None: return
     
-    output_image = processing_image.copy()
-    gray = cv2.cvtColor(processing_image, cv2.COLOR_BGR2GRAY)
-
-    # Blur slightly to remove noise/texture (helps detection)
+    orig_h, orig_w = original_image.shape[:2]
+    
+    # 2. Resize ONLY for detection scanning (to make it fast)
+    scale_ratio = DETECTION_WIDTH / float(orig_w)
+    new_height = int(orig_h * scale_ratio)
+    resized_image = cv2.resize(original_image, (DETECTION_WIDTH, new_height), interpolation=cv2.INTER_AREA)
+    
+    gray = cv2.cvtColor(resized_image, cv2.COLOR_BGR2GRAY)
     gray = cv2.GaussianBlur(gray, (9, 9), 2)
 
-    # Detect Balls
+    # 3. Detect Balls
     circles = cv2.HoughCircles(
         gray, 
         cv2.HOUGH_GRADIENT, 
@@ -93,23 +72,42 @@ def main():
         minDist=50,       
         param1=50,        
         param2=30,        
-        minRadius=20,     # Increased slightly since we upscaled the image
+        minRadius=20,     
         maxRadius=400
     )
 
+    final_output = original_image.copy()
+    ball_found = False
+
     if circles is not None:
         circles = np.round(circles[0, :]).astype("int")
+        print(f"Found {len(circles)} object(s). Scaling to original size...")
         
-        for (x, y, r) in circles:
-            padding = 10
-            y_min = max(0, y - r - padding)
-            y_max = min(processing_image.shape[0], y + r + padding)
-            x_min = max(0, x - r - padding)
-            x_max = min(processing_image.shape[1], x + r + padding)
+        for (x_small, y_small, r_small) in circles:
+            # --- STEP A: Scale coordinates back to ORIGINAL size ---
+            # We divide by scale_ratio to get the real pixel locations
+            x_real = int(x_small / scale_ratio)
+            y_real = int(y_small / scale_ratio)
+            r_real = int(r_small / scale_ratio)
+            
+            # --- STEP B: Dynamic Padding ---
+            # Instead of fixed pixels, we take 25% of the radius as padding.
+            # This ensures the box fits the ball perfectly regardless of image size.
+            padding = int(r_real * 0.25)
+            
+            y_min = max(0, y_real - r_real - padding)
+            y_max = min(orig_h, y_real + r_real + padding)
+            x_min = max(0, x_real - r_real - padding)
+            x_max = min(orig_w, x_real + r_real + padding)
 
-            roi = processing_image[y_min:y_max, x_min:x_max]
-            if roi.size == 0: continue
+            # Crop the FULL RESOLUTION ball
+            roi = original_image[y_min:y_max, x_min:x_max]
+            
+            # Skip if crop is invalid
+            if roi.size == 0 or roi.shape[0] == 0 or roi.shape[1] == 0:
+                continue
 
+            # 4. Predict
             processed_roi = preprocess_for_model(roi, IMG_SIZE)
             predictions = model.predict(processed_roi, verbose=0)
             
@@ -118,26 +116,47 @@ def main():
             label = CLASS_LABELS[class_idx]
 
             if confidence > 0.4:
-                # Draw on the RESIZED image
-                cv2.rectangle(output_image, (x_min, y_min), (x_max, y_max), (0, 255, 0), 3)
+                ball_found = True
                 
+                # --- STEP C: Dynamic Drawing Thickness ---
+                # Calculate line thickness based on image size so it's visible on 4K images
+                line_thickness = max(3, int(orig_w / 300))
+                font_scale = max(0.8, orig_w / 1000.0)
+                
+                # Draw Box on Original Image
+                cv2.rectangle(final_output, (x_min, y_min), (x_max, y_max), (0, 255, 0), line_thickness)
+                
+                # Draw Label
                 label_text = f"{label}: {confidence*100:.1f}%"
-                (w, h), _ = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+                (w, h), _ = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, line_thickness)
                 
-                cv2.rectangle(output_image, (x_min, y_min - 25), (x_min + w, y_min), (0, 255, 0), -1)
-                cv2.putText(output_image, label_text, (x_min, y_min - 5),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
+                # Label Background
+                cv2.rectangle(final_output, (x_min, y_min - int(h*1.5)), (x_min + w, y_min), (0, 255, 0), -1)
                 
-                print(f"Detected: {label}")
+                # Label Text
+                cv2.putText(final_output, label_text, (x_min, y_min - int(h*0.3)),
+                            cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 0, 0), line_thickness)
+                
+                print(f"Detected: {label} (Size: {x_max-x_min}x{y_max-y_min}px)")
 
+    # 5. Display Logic (Handle huge images for viewing)
+    if ball_found:
+        print("Displaying result...")
+        # If image is too tall for screen (e.g. > 900px), shrink the VIEW only
+        screen_h_limit = 900
+        if final_output.shape[0] > screen_h_limit:
+            scale_view = screen_h_limit / final_output.shape[0]
+            new_w = int(final_output.shape[1] * scale_view)
+            new_h = int(final_output.shape[0] * scale_view)
+            view_img = cv2.resize(final_output, (new_w, new_h))
+            cv2.imshow("Result (Scaled to fit screen)", view_img)
+        else:
+            cv2.imshow("Result (Original)", final_output)
+            
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
     else:
         print("No balls detected.")
-        cv2.putText(output_image, "No Ball Detected", (30, 30), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-
-    cv2.imshow("Ball Detection Result", output_image)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
 
 if __name__ == "__main__":
     main()

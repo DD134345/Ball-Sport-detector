@@ -19,9 +19,12 @@ BALL_CLASSES = [
     'volleyball'
 ]
 
-IMAGE_SIZE = (224, 224)  # Must match training size
+IMAGE_SIZE = (192, 192)  # Must match training size
 MODEL_PATH = 'Ball_sport_classifier.h5'
-CONFIDENCE_THRESHOLD = 0.2  # Minimum confidence to display prediction
+CONFIDENCE_THRESHOLD = 0.3  # Minimum confidence to display prediction
+DETECTION_WINDOW_SIZE = 192  # Size of sliding window
+DETECTION_STEP_SIZE = 96  # Step size for sliding window (50% overlap)
+MIN_DETECTION_CONFIDENCE = 0.4  # Minimum confidence for a detection to be considered
 
 
 class BallDetectorApp:
@@ -37,6 +40,7 @@ class BallDetectorApp:
         self.is_loading = False
         self.current_image_path = None
         self.current_predictions = None
+        self.detected_balls = []  # List of detected balls with bounding boxes
         self.load_model()
         
         # Create UI
@@ -232,22 +236,25 @@ class BallDetectorApp:
     def _process_image(self, file_path):
         """Process image in background thread"""
         try:
-            self.progress_label.config(text="⏳ Processing image...", fg="blue")
+            self.progress_label.config(text="⏳ Loading image...", fg="blue")
             self.root.update()
             
             # First display image without annotations
             self.display_image(file_path)
             
-            # Then predict and update with annotations
-            self.predict_ball(file_path)
+            self.progress_label.config(text="⏳ Scanning for balls (this may take a moment)...", fg="blue")
+            self.root.update()
             
-            self.progress_label.config(text="✓ Detection Complete!", fg="green")
+            # Then detect multiple balls and update with annotations
+            self.detect_multiple_balls(file_path)
+            
+            self.progress_label.config(text=f"✓ Detection Complete! Found {len(self.detected_balls)} ball(s)", fg="green")
             
         except Exception as e:
             self.progress_label.config(text="")
             messagebox.showerror("Error", f"Failed to process image: {str(e)}")
     
-    def display_image(self, file_path, predictions=None, predicted_class=None, confidence=None):
+    def display_image(self, file_path, predictions=None, predicted_class=None, confidence=None, detected_balls=None):
         """Display the selected image with detection annotations"""
         try:
             # Store current image path
@@ -264,11 +271,13 @@ class BallDetectorApp:
             img_copy = img.copy()
             
             # Add detection annotations if available
-            if predictions is not None and predicted_class is not None:
+            if detected_balls is not None and len(detected_balls) > 0:
+                img_copy = self.annotate_multiple_balls(img_copy, detected_balls)
+            elif predictions is not None and predicted_class is not None:
                 img_copy = self.annotate_image(img_copy, predicted_class, confidence)
             
-            # Thumbnail for display (keep aspect ratio)
-            display_size = (600, 600)
+            # Thumbnail for display (keep aspect ratio) - larger size for better visibility
+            display_size = (800, 800)
             img_copy.thumbnail(display_size, Image.Resampling.LANCZOS)
             
             photo = ImageTk.PhotoImage(img_copy)
@@ -278,6 +287,90 @@ class BallDetectorApp:
             
         except Exception as e:
             messagebox.showerror("Image Error", f"Failed to load image: {str(e)}")
+    
+    def annotate_multiple_balls(self, img, detected_balls):
+        """Add bounding boxes and labels for multiple detected balls"""
+        try:
+            draw = ImageDraw.Draw(img)
+            width, height = img.size
+            
+            # Try to load fonts
+            try:
+                font_large = ImageFont.truetype("C:/Windows/Fonts/arial.ttf", size=max(20, int(height * 0.03)))
+                font_medium = ImageFont.truetype("C:/Windows/Fonts/arial.ttf", size=max(16, int(height * 0.025)))
+            except:
+                font_large = ImageFont.load_default()
+                font_medium = ImageFont.load_default()
+            
+            # Define colors (RGB format for PIL)
+            colors = {
+                'basketball': (255, 140, 0),      # Orange
+                'billiard_ball': (255, 255, 255), # White
+                'bowling_ball': (0, 0, 0),        # Black
+                'football': (139, 69, 19),        # Brown
+                'tennis_ball': (0, 255, 0),       # Green
+                'volleyball': (255, 255, 0)       # Yellow
+            }
+            
+            # Draw each detection
+            for idx, detection in enumerate(detected_balls):
+                x_min, y_min, x_max, y_max = detection['bbox']
+                ball_class = detection['class']
+                confidence = detection['confidence']
+                ball_name = BALL_CLASSES[ball_class]
+                ball_color = colors.get(ball_name, (255, 0, 0))
+                
+                # Draw bounding box
+                box_width = 3
+                draw.rectangle([x_min, y_min, x_max, y_max], outline=ball_color, width=box_width)
+                
+                # Draw label background
+                label_text = f"{ball_name.upper()}: {confidence*100:.1f}%"
+                bbox = draw.textbbox((0, 0), label_text, font=font_medium)
+                text_width = bbox[2] - bbox[0]
+                text_height = bbox[3] - bbox[1]
+                
+                label_y = max(0, y_min - text_height - 5)
+                label_x = x_min
+                
+                # Draw semi-transparent background for label
+                overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
+                overlay_draw = ImageDraw.Draw(overlay)
+                overlay_draw.rectangle([label_x, label_y, label_x + text_width + 10, label_y + text_height + 5], 
+                                      fill=(0, 0, 0, 200))
+                img = Image.alpha_composite(img.convert('RGBA'), overlay).convert('RGB')
+                draw = ImageDraw.Draw(img)
+                
+                # Draw label text
+                draw.text((label_x + 5, label_y + 2), label_text, font=font_medium, fill=ball_color)
+            
+            # Draw summary at top
+            summary_text = f"Detected {len(detected_balls)} ball(s)"
+            bbox = draw.textbbox((0, 0), summary_text, font=font_large)
+            summary_width = bbox[2] - bbox[0]
+            summary_x = (width - summary_width) // 2
+            summary_y = 10
+            
+            # Draw summary background
+            overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
+            overlay_draw = ImageDraw.Draw(overlay)
+            overlay_draw.rectangle([summary_x - 10, summary_y - 5, summary_x + summary_width + 10, summary_y + bbox[3] - bbox[1] + 5], 
+                                  fill=(0, 0, 0, 220))
+            img = Image.alpha_composite(img.convert('RGBA'), overlay).convert('RGB')
+            draw = ImageDraw.Draw(img)
+            
+            # Draw summary text
+            for adj in range(-2, 3):
+                for adj2 in range(-2, 3):
+                    draw.text((summary_x + adj, summary_y + adj2), summary_text, 
+                             font=font_large, fill=(0, 0, 0))
+            draw.text((summary_x, summary_y), summary_text, font=font_large, fill=(255, 255, 255))
+            
+            return img
+            
+        except Exception as e:
+            print(f"Annotation error: {str(e)}")
+            return img
     
     def annotate_image(self, img, predicted_class, confidence):
         """Add detection annotations to the image"""
@@ -384,46 +477,130 @@ class BallDetectorApp:
             print(f"Annotation error: {str(e)}")
             return img
     
-    def predict_ball(self, file_path):
-        """Predict the ball type with proper preprocessing"""
+    def detect_multiple_balls(self, file_path):
+        """Detect multiple balls in an image using sliding window approach"""
         try:
-            # Load image with target size matching training
-            img = image.load_img(file_path, target_size=IMAGE_SIZE)
-            img_array = image.img_to_array(img)
-            
-            # Preprocessing: match training preprocessing (rescale=1./255)
-            img_array = np.expand_dims(img_array, axis=0)
-            img_array = img_array / 255.0  # Normalize to [0, 1] like training
-            
-            # Validate preprocessing
-            if np.isnan(img_array).any():
-                raise ValueError("Image preprocessing resulted in NaN values")
-            
-            # Make prediction with low verbosity
             if self.model is None:
                 raise ValueError("Model is not loaded. Please ensure the model file exists and is loaded correctly.")
             
-            predictions = self.model.predict(img_array, verbose=0)
+            # Load full resolution image
+            original_img = Image.open(file_path)
+            if original_img.mode != 'RGB':
+                original_img = original_img.convert('RGB')
             
-            # Validate predictions
-            if predictions is None or len(predictions) == 0:
-                raise ValueError("Model returned no predictions")
+            img_array_full = np.array(original_img)
+            height, width = img_array_full.shape[:2]
             
-            prediction_scores = predictions[0]
-            predicted_class = np.argmax(prediction_scores)
-            confidence = prediction_scores[predicted_class]
+            # Scale factors for different detection scales
+            scales = [1.0, 0.75, 0.5, 1.25]  # Multiple scales to detect different sized balls
+            all_detections = []
             
-            # Store predictions
-            self.current_predictions = prediction_scores
+            print(f"🔍 Scanning image for balls ({width}x{height})...")
             
-            # Update image with annotations in main thread
-            self.root.after(0, self.update_image_with_detection, file_path, prediction_scores, predicted_class, confidence)
+            for scale in scales:
+                scaled_width = int(width * scale)
+                scaled_height = int(height * scale)
+                scaled_img = original_img.resize((scaled_width, scaled_height), Image.Resampling.LANCZOS)
+                scaled_array = np.array(scaled_img)
+                
+                # Sliding window detection
+                for y in range(0, scaled_height - DETECTION_WINDOW_SIZE + 1, DETECTION_STEP_SIZE):
+                    for x in range(0, scaled_width - DETECTION_WINDOW_SIZE + 1, DETECTION_STEP_SIZE):
+                        # Extract window
+                        window = scaled_array[y:y+DETECTION_WINDOW_SIZE, x:x+DETECTION_WINDOW_SIZE]
+                        
+                        # Preprocess window
+                        window_img = Image.fromarray(window)
+                        window_array = image.img_to_array(window_img)
+                        window_array = np.expand_dims(window_array, axis=0)
+                        window_array = window_array / 255.0
+                        
+                        # Predict
+                        predictions = self.model.predict(window_array, verbose=0)
+                        prediction_scores = predictions[0]
+                        predicted_class = np.argmax(prediction_scores)
+                        confidence = prediction_scores[predicted_class]
+                        
+                        # If confidence is high enough, record detection
+                        if confidence >= MIN_DETECTION_CONFIDENCE:
+                            # Convert back to original image coordinates
+                            orig_x = int(x / scale)
+                            orig_y = int(y / scale)
+                            orig_size = int(DETECTION_WINDOW_SIZE / scale)
+                            
+                            all_detections.append({
+                                'class': predicted_class,
+                                'confidence': confidence,
+                                'bbox': (orig_x, orig_y, orig_x + orig_size, orig_y + orig_size),
+                                'all_scores': prediction_scores
+                            })
             
-            # Display results in main thread
-            self.root.after(0, self.display_results, prediction_scores, predicted_class, confidence)
+            # Non-maximum suppression to remove overlapping detections
+            detected_balls = self.non_max_suppression(all_detections, overlap_threshold=0.3)
+            
+            # Store detections
+            self.detected_balls = detected_balls
+            self.current_image_path = file_path
+            
+            # Update display
+            self.root.after(0, self.update_image_with_multiple_detections, file_path, detected_balls)
+            self.root.after(0, self.display_multiple_results, detected_balls)
             
         except Exception as e:
-            self.root.after(0, messagebox.showerror, "Prediction Error", f"Failed to predict: {str(e)}")
+            self.root.after(0, messagebox.showerror, "Detection Error", f"Failed to detect balls: {str(e)}")
+    
+    def non_max_suppression(self, detections, overlap_threshold=0.3):
+        """Remove overlapping detections, keeping the one with highest confidence"""
+        if not detections:
+            return []
+        
+        # Sort by confidence (highest first)
+        detections = sorted(detections, key=lambda x: x['confidence'], reverse=True)
+        
+        filtered = []
+        for det in detections:
+            # Check overlap with existing detections
+            overlap = False
+            for existing in filtered:
+                if self.calculate_iou(det['bbox'], existing['bbox']) > overlap_threshold:
+                    overlap = True
+                    break
+            
+            if not overlap:
+                filtered.append(det)
+        
+        return filtered
+    
+    def calculate_iou(self, box1, box2):
+        """Calculate Intersection over Union (IoU) of two bounding boxes"""
+        x1_min, y1_min, x1_max, y1_max = box1
+        x2_min, y2_min, x2_max, y2_max = box2
+        
+        # Calculate intersection
+        inter_x_min = max(x1_min, x2_min)
+        inter_y_min = max(y1_min, y2_min)
+        inter_x_max = min(x1_max, x2_max)
+        inter_y_max = min(y1_max, y2_max)
+        
+        if inter_x_max <= inter_x_min or inter_y_max <= inter_y_min:
+            return 0.0
+        
+        inter_area = (inter_x_max - inter_x_min) * (inter_y_max - inter_y_min)
+        
+        # Calculate union
+        box1_area = (x1_max - x1_min) * (y1_max - y1_min)
+        box2_area = (x2_max - x2_min) * (y2_max - y2_min)
+        union_area = box1_area + box2_area - inter_area
+        
+        if union_area == 0:
+            return 0.0
+        
+        return inter_area / union_area
+    
+    def predict_ball(self, file_path):
+        """Predict the ball type with proper preprocessing (legacy single detection)"""
+        # Use multi-ball detection instead
+        self.detect_multiple_balls(file_path)
     
     def update_image_with_detection(self, file_path, predictions, predicted_class, confidence):
         """Update the displayed image with detection annotations"""
@@ -431,6 +608,72 @@ class BallDetectorApp:
             self.display_image(file_path, predictions, predicted_class, confidence)
         except Exception as e:
             print(f"Error updating image: {str(e)}")
+    
+    def update_image_with_multiple_detections(self, file_path, detected_balls):
+        """Update the displayed image with multiple detection annotations"""
+        try:
+            self.display_image(file_path, detected_balls=detected_balls)
+        except Exception as e:
+            print(f"Error updating image: {str(e)}")
+    
+    def display_multiple_results(self, detected_balls):
+        """Display results for multiple detected balls"""
+        self.results_text.config(state=tk.NORMAL)
+        self.results_text.delete(1.0, tk.END)
+        
+        if not detected_balls:
+            result_text = "⚠️  NO BALLS DETECTED\n"
+            result_text += f"{'═'*60}\n"
+            result_text += "No balls were detected in this image.\n"
+            result_text += "Try:\n"
+            result_text += "  - Using a clearer image\n"
+            result_text += "  - Ensuring balls are visible\n"
+            result_text += "  - Checking image quality"
+            self.results_text.insert(1.0, result_text)
+            self.results_text.config(state=tk.DISABLED)
+            return
+        
+        # Group detections by ball type
+        ball_counts = {}
+        for detection in detected_balls:
+            ball_name = BALL_CLASSES[detection['class']]
+            if ball_name not in ball_counts:
+                ball_counts[ball_name] = []
+            ball_counts[ball_name].append(detection)
+        
+        # Build results text
+        result_text = f"🎯 DETECTION RESULTS: {len(detected_balls)} Ball(s) Found\n"
+        result_text += f"{'═'*60}\n\n"
+        
+        # Summary by ball type
+        result_text += "📊 SUMMARY BY BALL TYPE:\n"
+        result_text += f"{'━'*60}\n"
+        for ball_name, detections in sorted(ball_counts.items()):
+            avg_confidence = np.mean([d['confidence'] for d in detections]) * 100
+            result_text += f"  • {ball_name.upper()}: {len(detections)} detected (avg: {avg_confidence:.1f}%)\n"
+        
+        result_text += f"\n{'═'*60}\n"
+        result_text += "📍 DETAILED DETECTIONS:\n"
+        result_text += f"{'═'*60}\n\n"
+        
+        # List all detections
+        for idx, detection in enumerate(detected_balls, 1):
+            ball_name = BALL_CLASSES[detection['class']]
+            confidence = detection['confidence'] * 100
+            x_min, y_min, x_max, y_max = detection['bbox']
+            
+            result_text += f"Detection #{idx}:\n"
+            result_text += f"  Ball Type: {ball_name.upper()}\n"
+            result_text += f"  Confidence: {confidence:.2f}%\n"
+            result_text += f"  Location: ({x_min}, {y_min}) to ({x_max}, {y_max})\n"
+            result_text += f"  Size: {x_max-x_min}x{y_max-y_min} pixels\n"
+            result_text += f"{'─'*60}\n\n"
+        
+        result_text += f"{'═'*60}\n"
+        result_text += "💡 Tip: Bounding boxes are drawn around each detected ball"
+        
+        self.results_text.insert(1.0, result_text)
+        self.results_text.config(state=tk.DISABLED)
     
     def display_results(self, predictions, predicted_class, confidence):
         """Display prediction results with confidence thresholds"""
@@ -481,6 +724,7 @@ class BallDetectorApp:
         self.image_label.config(image='')
         self.current_image_path = None
         self.current_predictions = None
+        self.detected_balls = []
         self.results_text.config(state=tk.NORMAL)
         self.results_text.delete(1.0, tk.END)
         self.results_text.config(state=tk.DISABLED)
